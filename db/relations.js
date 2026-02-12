@@ -1,0 +1,60 @@
+// Initialize all model relations
+const Pays = require('./pays/model');
+const Prefecture = require('./prefecture/model');
+const Activity = require('./domain_activite/model');
+const Branche = require('./branches/model');
+const Users = require('./users/model');
+const Employeur = require('./XYemployeurs/model');
+const Employe = require('./employe/model');
+const CotisationEmployeur = require('./cotisation_employeur/model');
+const Demploye = require('./declaration-employe/model');
+const Paiement = require('./paiement/model');
+const Quittance = require('./quittance/model');
+const Penalite = require('./penalites/model');
+const Demande = require('./demandes/model');
+const Carer = require('./carriere/model');
+const Conjoint = require('./conjoint/model');
+const Enfant = require('./enfant/model');
+const Document = require('./document/model');
+const Otp = require('./otp/model');
+const ExcelFile = require('./excel_file/model');
+const Quitus = require('./quitus/model');
+const Succursale = require('./succursale/model');
+const DirgaU = require('./dirga_user/model');
+const AffiliationVolontaire = require('./affiliation-volontaire/model');
+
+// Initialize hasMany relations
+Pays.hasMany(Prefecture, { foreignKey: 'paysId', as: 'prefectures' });
+Activity.hasMany(Branche, { foreignKey: 'activityId', as: 'branches' });
+Branche.hasMany(Employeur, { foreignKey: 'brancheId', as: 'employeurs' });
+Branche.hasMany(AffiliationVolontaire, { foreignKey: 'brancheId', as: 'affiliations_volontaires' });
+Prefecture.hasMany(Employeur, { foreignKey: 'prefectureId', as: 'employeurs' });
+Prefecture.hasMany(Employe, { foreignKey: 'prefectureId', as: 'employes' });
+Prefecture.hasMany(AffiliationVolontaire, { foreignKey: 'prefectureId', as: 'affiliations_volontaires' });
+Users.hasMany(Otp, { foreignKey: 'userId', as: 'otps' });
+Users.hasMany(CotisationEmployeur, { foreignKey: 'userId', as: 'cotisations' });
+Users.hasMany(Paiement, { foreignKey: 'userId', as: 'paiements' });
+Users.hasMany(Demande, { foreignKey: 'userId', as: 'demandes' });
+Employeur.hasMany(Employe, { foreignKey: 'employeurId', as: 'employes' });
+Employeur.hasMany(CotisationEmployeur, { foreignKey: 'employeurId', as: 'cotisations' });
+Employeur.hasMany(Paiement, { foreignKey: 'employeurId', as: 'paiements' });
+Employeur.hasMany(Quittance, { foreignKey: 'employeurId', as: 'quittances' });
+Employeur.hasMany(Penalite, { foreignKey: 'employeurId', as: 'penalites' });
+Employeur.hasMany(Demande, { foreignKey: 'employeurId', as: 'demandes' });
+Employeur.hasMany(Document, { foreignKey: 'employeurId', as: 'documents' });
+Employeur.hasMany(Succursale, { foreignKey: 'employeurId', as: 'succursales' });
+Employe.hasMany(Carer, { foreignKey: 'employeId', as: 'carrieres' });
+Employe.hasMany(Conjoint, { foreignKey: 'employeId', as: 'conjoints' });
+Employe.hasMany(Enfant, { foreignKey: 'employeId', as: 'enfants' });
+CotisationEmployeur.hasMany(Demploye, { foreignKey: 'cotisation_employeurId', as: 'declarations_employes' });
+CotisationEmployeur.hasMany(Paiement, { foreignKey: 'cotisation_employeurId', as: 'paiements' });
+CotisationEmployeur.hasMany(Quittance, { foreignKey: 'cotisation_employeurId', as: 'quittances' });
+Paiement.hasOne(Quittance, { foreignKey: 'paiementId', as: 'quittance' });
+Demande.hasMany(ExcelFile, { foreignKey: 'demandeId', as: 'excel_files' });
+Demande.hasMany(Quitus, { foreignKey: 'demandeId', as: 'quitus' });
+DirgaU.hasMany(Demande, { foreignKey: 'dirgaId', as: 'demandes' });
+Conjoint.hasMany(Enfant, { foreignKey: 'conjointId', as: 'enfants' });
+
+console.log('✅ All model relations initialized');
+
+module.exports = {};
