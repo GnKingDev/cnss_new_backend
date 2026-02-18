@@ -22,6 +22,10 @@ const Quitus = require('./quitus/model');
 const Succursale = require('./succursale/model');
 const DirgaU = require('./dirga_user/model');
 const AffiliationVolontaire = require('./affiliation-volontaire/model');
+const PrestationDemande = require('./prestation/model');
+const PrestationDocument = require('./prestation/documentModel');
+const BiometrieDemande = require('./biometrie/model');
+const ReclamationDemande = require('./reclamation/model');
 
 // Initialize hasMany relations
 Pays.hasMany(Prefecture, { foreignKey: 'paysId', as: 'prefectures' });
@@ -54,6 +58,9 @@ Demande.hasMany(ExcelFile, { foreignKey: 'demandeId', as: 'excel_files' });
 Demande.hasMany(Quitus, { foreignKey: 'demandeId', as: 'quitus' });
 DirgaU.hasMany(Demande, { foreignKey: 'dirgaId', as: 'demandes' });
 Conjoint.hasMany(Enfant, { foreignKey: 'conjointId', as: 'enfants' });
+PrestationDemande.hasMany(PrestationDocument, { foreignKey: 'prestation_demande_id', as: 'documents' });
+Employeur.hasMany(BiometrieDemande, { foreignKey: 'employeur_id', as: 'biometrie_demandes' });
+Employeur.hasMany(ReclamationDemande, { foreignKey: 'employeur_id', as: 'reclamation_demandes' });
 
 console.log('✅ All model relations initialized');
 

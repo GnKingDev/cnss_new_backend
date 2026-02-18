@@ -115,7 +115,7 @@ async function genereQuittance(paiement, period, fileName, code, periode, type, 
     </body></html>`;
 
     ensureDocsDir();
-    browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'networkidle0' });
     await page.emulateMediaType('screen');
@@ -314,6 +314,25 @@ async function sendMailAfflitionVolonValidation(to, affiliationVolontaire, passw
   }
 }
 
+/** Envoi de la carte d'assuré (PDF) par email. */
+async function sendMailCarteAssure(toEmail, employeName, pdfBuffer) {
+  if (!transporter || !toEmail) {
+    throw new Error('Email non configuré ou destinataire manquant');
+  }
+  const fileName = `carte-assure-${(employeName || 'assure').replace(/\s+/g, '-')}.pdf`;
+  await transporter.sendMail({
+    from: `"eCNSS - Carte d'assuré" <${user_email_name}>`,
+    to: toEmail,
+    subject: "Votre carte d'assuré social - CNSS Guinée",
+    html: `
+      <p>Bonjour${employeName ? ` ${employeName}` : ''},</p>
+      <p>Veuillez trouver ci-joint votre carte d'assuré social (eCNSS).</p>
+      <p>République de Guinée - Caisse Nationale de Sécurité Sociale</p>
+    `,
+    attachments: [{ filename: fileName, content: pdfBuffer }]
+  });
+}
+
 // ---------- OTP (secret.json à la racine) ----------
 async function generateOtpCode() {
   return new Promise((resolve, reject) => {
@@ -380,7 +399,7 @@ async function getQuittusFile(Employeur, code, fileName, category, reference, la
     </body></html>`;
 
     ensureDocsDir();
-    browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'networkidle0' });
     await page.emulateMediaType('screen');
@@ -421,7 +440,7 @@ async function genererRecuQuitus(employeur, reference, fileName) {
     </body></html>`;
 
     ensureDocsDir();
-    browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'networkidle0' });
     await page.emulateMediaType('screen');
@@ -533,6 +552,7 @@ module.exports = {
   sendComptePayeurMail,
   sendMailEmployeurValidation,
   sendMailAfflitionVolonValidation,
+  sendMailCarteAssure,
   getQuittusFile,
   getEmployeHisExcelFile,
   getImportFileForDeclaration,

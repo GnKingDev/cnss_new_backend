@@ -902,37 +902,42 @@ router.get('/', asyncHandler(async (req, res) => {
 
 /**
  * GET /api/v1/employeur/profile
- * Profil employeur complet pour le menu "Mon compte" (tous les champs nécessaires).
+ * Profil employeur (raison sociale, n° immatriculation) + infos utilisateur connecté (nom, rôle).
  * Authentification : EmployeurToken
  */
 router.get('/profile', userUtility.EmployeurToken, asyncHandler(async (req, res) => {
-  const employeur = await Employeur.findByPk(req.user.user_id);
-  
+  const start = Date.now();
+  const [employeur, user] = await Promise.all([
+    Employeur.findByPk(req.user.user_id),
+    Users.findByPk(req.user.id, { attributes: ['full_name', 'type'], raw: true })
+  ]);
+
   if (!employeur) {
     return res.status(404).json({ message: 'Employeur non trouvé' });
   }
 
-  // Retourner tous les champs nécessaires pour le menu "Mon compte"
-  return res.status(200).json({
+  const payload = {
     id: employeur.id,
-    raison_sociale: employeur.raison_sociale || null,
-    no_immatriculation: employeur.no_immatriculation || null,
-    category: employeur.category || null,
-    phone_number: employeur.phone_number || null,
-    email: employeur.email || null,
-    adresse: employeur.adresse || null,
-    sigle: employeur.sigle || null,
-    description: employeur.description || null,
-    secondary_activity: employeur.secondary_activity || null,
-    effectif_total: employeur.effectif_total || null,
-    number_employe: employeur.number_employe || null,
-    forme_juridique: employeur.forme_juridique || null,
-    no_rccm: employeur.no_rccm || null,
-    no_dni: employeur.no_dni || null,
-    is_active: employeur.is_active !== undefined ? employeur.is_active : null,
-    createdAt: employeur.createdAt || null,
-    updatedAt: employeur.updatedAt || null
-  });
+    raison_sociale: employeur.raison_sociale || '',
+    no_immatriculation: employeur.no_immatriculation || '',
+    cnss_number: employeur.no_immatriculation || '',
+    nif: employeur.no_rccm || employeur.no_dni || '',
+    adresse: employeur.adresse || '',
+    address: employeur.adresse || '',
+    phone_number: employeur.phone_number || '',
+    phone: employeur.phone_number || '',
+    email: employeur.email || '',
+    contact_rh: employeur.description || employeur.sigle || '',
+    userFullName: (user && user.full_name) || '',
+    userRole: (user && user.type) || 'Administrateur'
+  };
+
+  const duration = (Date.now() - start).toFixed(3);
+  const contentLength = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  console.log(`GET /api/v1/employeur/profile 200 ${contentLength} - ${duration} ms`);
+  console.log('Response profile:', payload);
+
+  return res.status(200).json(payload);
 }));
 
 /**

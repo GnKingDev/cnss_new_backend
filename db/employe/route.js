@@ -4,12 +4,15 @@ const Employe = require('./model');
 const Employeur = require('../XYemployeurs/model');
 const Prefecture = require('../prefecture/model');
 const Carer = require('../carriere/model');
+const Conjoint = require('../conjoint/model');
+const Enfant = require('../enfant/model');
 const Demploye = require('../declaration-employe/model');
 const CotisationEmployeur = require('../cotisation_employeur/model');
 const Users = require('../users/model');
 const Demande = require('../demandes/model');
 const Document = require('../document/model');
 const ExcelFile = require('../excel_file/model');
+const { generateCarteAssurePdfBuffer } = require('./carteAssurePdf');
 const utility = require('./utility');
 const { EmployeurToken, EmployeToken, hashPassword, generateUniqueCode } = require('../users/utility');
 const { verifyToken, valideEmailFunction, ValidatePhoneNumber, upload, DeleteDelegateUser } = require('../XYemployeurs/utility');
@@ -89,6 +92,15 @@ const employeUpload = multer({
   limits: {
     fileSize: 5 * 1024 * 1024, // 5 MB max
     files: 10
+  }
+});
+
+// Multer pour PATCH famille : nombreux fichiers (photos conjoints/enfants, extraits)
+const familleUpload = multer({
+  storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5 MB par fichier
+    files: 30
   }
 });
 
@@ -588,6 +600,861 @@ router.get('/get_employe_famille/:id', EmployeurToken, async (req, res) => {
   } catch (error) {
     console.error('[EMPLOYE_GET_FAMILLE] Error:', error);
     return res.status(400).json({ message: 'Erreur' });
+  }
+});
+
+// ============================================
+// FICHE EMPLOYÉ — Détail, édition, sortie, famille, cotisations, carrière, prestations
+// ============================================
+
+/** Vérifie que l'employé appartient à l'employeur connecté */
+const ensureEmployeBelongsToEmployeur = async (employeId, employeurId) => {
+  const employe = await Employe.findByPk(employeId);
+  if (!employe) return { error: 404, message: 'Employé non trouvé' };
+  if (employe.employeurId !== employeurId) return { error: 403, message: 'Non autorisé' };
+  return { employe };
+};
+
+/**
+ * GET /api/v1/employe/:id
+ * Détail d'un employé (fiche, modals) + quick stats (mois cotisés, total cotisations, enfants déclarés, années carrière).
+ */
+router.get('/:id', EmployeurToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
+    const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+    if (error) return res.status(error).json({ message });
+    const full = await Employe.findByPk(employe.id, {
+      include: [
+        { association: 'employeur', attributes: ['id', 'raison_sociale', 'no_immatriculation', 'adresse'] },
+        { association: 'prefecture' }
+      ]
+    });
+    if (!full) return res.status(404).json({ message: 'Employé non trouvé' });
+
+    const decls = await Demploye.findAll({
+      where: { employeId: id },
+      include: [{ model: CotisationEmployeur, as: 'cotisation_employeur', attributes: ['id', 'is_paid'] }]
+    });
+    const declsPaid = decls.filter(d => (d.toJSON ? d.toJSON() : d).cotisation_employeur?.is_paid);
+    const total_mois_cotises = declsPaid.length;
+    const totalCotisationsNum = declsPaid.reduce((s, d) => s + Number(d.total_cotisation || 0), 0);
+    const total_cotisations = totalCotisationsNum.toLocaleString('fr-FR') + ' GNF';
+
+    const enfants_declares = await Enfant.count({ where: { employeId: id } });
+
+    const carrieres = await Carer.findAll({
+      where: { employeId: id },
+      attributes: ['date_entre', 'date_sortie']
+    });
+    let annees_carriere = 0;
+    if (carrieres.length) {
+      const entrees = carrieres.map(c => c.date_entre).filter(Boolean).map(d => new Date(d).getTime());
+      const sorties = carrieres.map(c => c.date_sortie ? new Date(c.date_sortie).getTime() : Date.now());
+      if (entrees.length) {
+        const firstDate = new Date(Math.min(...entrees));
+        const lastDate = new Date(Math.max(...sorties));
+        annees_carriere = Math.max(0, Math.floor((lastDate - firstDate) / (365.25 * 24 * 60 * 60 * 1000)));
+      }
+    }
+
+    const raw = full.toJSON ? full.toJSON() : full;
+    const avatar = raw.avatar || 'uploads/user.jpeg';
+    const avatar_url = avatar.startsWith('http') ? avatar : '/' + avatar.replace(/^\/+/, '');
+    const payload = {
+      ...raw,
+      avatar,
+      avatar_url,
+      total_mois_cotises,
+      total_cotisations,
+      enfants_declares,
+      annees_carriere
+    };
+    console.log('[EMPLOYE_GET_ID] response stats', { id, total_mois_cotises, total_cotisations, enfants_declares, annees_carriere });
+    return res.status(200).json(payload);
+  } catch (err) {
+    console.error('[EMPLOYE_GET_ID]', err);
+    return res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+/**
+ * PATCH /api/v1/employe/:id/avatar
+ * Mise à jour de la photo de l'employé (multipart/form-data, champ avatar ou photo).
+ * Réponse : 200 avec objet employé mis à jour + avatar_url.
+ */
+router.patch('/:id/avatar', EmployeurToken, employeUpload.fields([{ name: 'avatar', maxCount: 1 }, { name: 'photo', maxCount: 1 }]), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
+    const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+    if (error) return res.status(error).json({ message });
+    const files = req.files || {};
+    const file = (files['avatar'] && files['avatar'][0]) || (files['photo'] && files['photo'][0]);
+    if (!file) return res.status(400).json({ message: 'Fichier requis (champ avatar ou photo en multipart/form-data)' });
+    const relativePath = 'uploads/' + path.basename(file.path);
+    await employe.update({ avatar: relativePath });
+    const updated = await Employe.findByPk(employe.id, {
+      include: [
+        { association: 'employeur', attributes: ['id', 'raison_sociale', 'no_immatriculation'] },
+        { association: 'prefecture' }
+      ]
+    });
+    const raw = updated.toJSON ? updated.toJSON() : updated;
+    const avatarPath = raw.avatar || 'uploads/user.jpeg';
+    const avatar_url = avatarPath.startsWith('http') ? avatarPath : '/' + avatarPath.replace(/^\/+/, '');
+    return res.status(200).json({ ...raw, avatar: avatarPath, avatar_url });
+  } catch (err) {
+    console.error('[EMPLOYE_PATCH_AVATAR]', err);
+    return res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+/**
+ * PATCH /api/v1/employe/:id
+ * Mise à jour des champs employé (modal édition).
+ */
+router.patch('/:id', EmployeurToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
+    const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+    if (error) return res.status(error).json({ message });
+    const allowed = ['first_name', 'last_name', 'email', 'phone_number', 'fonction', 'adress', 'date_of_birth', 'place_of_birth', 'nationality', 'situation_matrimoniale', 'ville', 'type_contrat', 'salary', 'father_first_name', 'father_last_name', 'mother_first_name', 'mother_last_name', 'father_date_of_birth', 'mother_date_of_birth', 'father_statut', 'mother_statut'];
+    const updates = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    await employe.update(updates);
+    const updated = await Employe.findByPk(employe.id, {
+      include: [
+        { association: 'employeur', attributes: ['id', 'raison_sociale', 'no_immatriculation'] },
+        { association: 'prefecture' }
+      ]
+    });
+    return res.status(200).json(updated);
+  } catch (err) {
+    console.error('[EMPLOYE_PATCH_ID]', err);
+    return res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+/**
+ * POST /api/v1/employe/:id/sortie
+ * Déclarer une sortie (is_out = true, out_date, etc.).
+ */
+router.post('/:id/sortie', EmployeurToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
+    const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+    if (error) return res.status(error).json({ message });
+    const { out_date, last_work_day, exit_reason, notice_period, notes } = req.body;
+    await employe.update({
+      is_out: true,
+      out_date: out_date ? new Date(out_date) : new Date(),
+      exit_reason: exit_reason || null,
+      notice_period: notice_period || null,
+      exit_notes: notes || null
+    });
+    const updated = await Employe.findByPk(employe.id, {
+      include: [
+        { association: 'employeur', attributes: ['id', 'raison_sociale', 'no_immatriculation'] },
+        { association: 'prefecture' }
+      ]
+    });
+    return res.status(200).json(updated);
+  } catch (err) {
+    console.error('[EMPLOYE_SORTIE]', err);
+    return res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+/**
+ * GET /api/v1/employe/:id/famille
+ * Conjoints (avec enfants) + parents.
+ */
+router.get('/:id/famille', EmployeurToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
+    const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+    if (error) return res.status(error).json({ message });
+    const conjoints = await Conjoint.findAll({
+      where: {
+        employeId: id,
+        [Op.or]: [{ statut_dossier: null }, { statut_dossier: { [Op.ne]: 'supprime' } }]
+      },
+      include: [{ model: Enfant, as: 'enfants', required: false }],
+      order: [['ordre', 'ASC']]
+    });
+    const spouses = conjoints.map(c => {
+      const conv = c.toJSON ? c.toJSON() : c;
+      const enfantsActifs = (conv.enfants || []).filter(e => e.statut_dossier !== 'supprime');
+      return {
+        id: conv.id,
+        nom: conv.last_name,
+        prenom: conv.first_name,
+        date_naissance: conv.date_of_birth,
+        lieu_naissance: conv.place_of_birth,
+        profession: conv.profession,
+        type_union: conv.type_union || 'mariage',
+        date_union: conv.date_mariage,
+        statut: conv.statut || 'actif',
+        statut_dossier: conv.statut_dossier || 'en_cours_validation',
+        certificat_mariage: (conv.civil_file && String(conv.civil_file).trim()) ? (conv.civil_file.startsWith('http') ? conv.civil_file : '/' + conv.civil_file.replace(/^\/+/, '')) : null,
+        photo: conv.picture ? (conv.picture.startsWith('http') ? conv.picture : '/' + conv.picture.replace(/^\/+/, '')) : null,
+        children: enfantsActifs.map(e => ({
+          id: e.id,
+          nom: e.last_name,
+          prenom: e.first_name,
+          date_naissance: e.date_of_birth,
+          lieu_naissance: e.place_of_birth,
+          sexe: e.gender,
+          statut: e.statut || (e.date_of_birth && (new Date().getFullYear() - new Date(e.date_of_birth).getFullYear() >= 18) ? 'majeur' : 'a_charge'),
+          statut_dossier: e.statut_dossier || 'en_cours_validation',
+          spouse_id: conv.id,
+          photo: e.picture ? (e.picture.startsWith('http') ? e.picture : '/' + e.picture.replace(/^\/+/, '')) : null,
+          extrait_naissance: (e.extrait_file && String(e.extrait_file).trim()) ? (e.extrait_file.startsWith('http') ? e.extrait_file : '/' + e.extrait_file.replace(/^\/+/, '')) : null
+        }))
+      };
+    });
+    const parents = {
+      father: employe.father_last_name || employe.father_first_name ? { nom: employe.father_last_name, prenom: employe.father_first_name, date_naissance: employe.father_date_of_birth, statut: employe.father_statut || 'vivant' } : null,
+      mother: employe.mother_last_name || employe.mother_first_name ? { nom: employe.mother_last_name, prenom: employe.mother_first_name, date_naissance: employe.mother_date_of_birth, statut: employe.mother_statut || 'vivant' } : null
+    };
+    return res.status(200).json({ spouses, parents });
+  } catch (err) {
+    console.error('[EMPLOYE_FAMILLE]', err);
+    return res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+/**
+ * PATCH /api/v1/employe/:id/famille
+ * Accepte multipart/form-data : champ "famille" (JSON string) + fichiers optionnels.
+ * Champs FormData : famille (JSON) | photo_conjoint_<spouseId> | certificat_mariage_<spouseId> | photo_enfant_<childId> | extrait_enfant_<childId>.
+ * spouseId / childId = id du conjoint/enfant dans le JSON famille. Un seul fichier par champ.
+ */
+router.patch('/:id/famille', EmployeurToken, familleUpload.any(), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
+    const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+    if (error) return res.status(error).json({ message });
+
+    const contentType = req.headers['content-type'] || '';
+    console.log('[PATCH_FAMILLE] Content-Type reçu:', contentType);
+    if (contentType.indexOf('multipart/form-data') !== 0) {
+      console.log('[PATCH_FAMILLE] Attention: pas multipart — les fichiers ne seront pas reçus. Le front doit envoyer FormData avec Content-Type multipart/form-data.');
+    }
+
+    let body = req.body || {};
+    // Log contenu brut du FormData reçu du front
+    const formDataKeys = Object.keys(body);
+    const formDataPreview = formDataKeys.reduce((acc, k) => {
+      const v = body[k];
+      if (k === 'famille' && typeof v === 'string') acc[k] = `[string length ${v.length}]`;
+      else if (k === 'famille' && typeof v === 'object') acc[k] = '[object]';
+      else acc[k] = v;
+      return acc;
+    }, {});
+    console.log('[PATCH_FAMILLE] FormData body (champs):', formDataKeys);
+    console.log('[PATCH_FAMILLE] FormData body (aperçu):', formDataPreview);
+    console.log('[PATCH_FAMILLE] FormData files:', (req.files || []).map(f => ({
+      fieldname: f.fieldname,
+      originalname: f.originalname,
+      size: f.size,
+      path: f.path
+    })));
+
+    if (typeof body.famille === 'string') {
+      try {
+        body = JSON.parse(body.famille);
+      } catch (e) {
+        return res.status(400).json({ message: 'Champ famille invalide (JSON attendu)' });
+      }
+    } else if (body.famille && typeof body.famille === 'object') {
+      body = body.famille;
+    }
+
+    const files = req.files || [];
+    const toRel = (p) => (p && path.basename(p)) ? 'uploads/' + path.basename(p) : null;
+    // N'accepter du body que les chemins qu'on a nous-mêmes générés (uploads/...) — pas de placeholder type /enfant/user.jpeg
+    const isOwnUploadPath = (val) => val && typeof val === 'string' && !val.startsWith('data:') && val.replace(/^\/+/, '').trim().startsWith('uploads/');
+    const bodyPathOrNull = (val) => (isOwnUploadPath(val) ? val.replace(/^\/+/, '').trim() : null);
+    const photoConjointMap = {};
+    const certificatMariageMap = {};
+    const photoEnfantMap = {};
+    const extraitEnfantMap = {};
+    files.forEach(f => {
+      const rel = toRel(f.path);
+      if (f.fieldname.startsWith('photo_conjoint_')) {
+        const key = f.fieldname.slice('photo_conjoint_'.length);
+        photoConjointMap[key] = rel;
+      } else if (f.fieldname.startsWith('certificat_mariage_')) {
+        const key = f.fieldname.slice('certificat_mariage_'.length);
+        certificatMariageMap[key] = rel;
+      } else if (f.fieldname.startsWith('photo_enfant_')) {
+        const key = f.fieldname.slice('photo_enfant_'.length);
+        photoEnfantMap[key] = rel;
+      } else if (f.fieldname.startsWith('extrait_enfant_')) {
+        const key = f.fieldname.slice('extrait_enfant_'.length);
+        extraitEnfantMap[key] = rel;
+      }
+    });
+
+    const spousesBody = Array.isArray(body.spouses) ? body.spouses : [];
+    const parentsBody = body.parents || {};
+
+    // Log ce que le front envoie pour l'enregistrement des enfants
+    const childrenPayload = spousesBody.map((s, idx) => ({
+      conjointIndex: idx,
+      conjointId: s.id,
+      children: (s.children || []).map((ch, j) => ({
+        index: j,
+        id: ch.id,
+        nom: ch.nom,
+        prenom: ch.prenom,
+        date_naissance: ch.date_naissance,
+        lieu_naissance: ch.lieu_naissance,
+        sexe: ch.sexe,
+        statut: ch.statut,
+        statut_dossier: ch.statut_dossier,
+        photo: ch.photo,
+        extrait_naissance: ch.extrait_naissance
+      }))
+    }));
+    const childFileFields = (req.files || []).filter(f => f.fieldname.startsWith('photo_enfant_') || f.fieldname.startsWith('extrait_enfant_')).map(f => ({ fieldname: f.fieldname, path: f.path }));
+    console.log('[PATCH_FAMILLE] Enfants envoyés par le front:', JSON.stringify(childrenPayload, null, 2));
+    console.log('[PATCH_FAMILLE] Fichiers enfants (FormData):', childFileFields);
+    console.log('[PATCH_FAMILLE] Maps photo_enfant / extrait_enfant:', { photoEnfantMap, extraitEnfantMap });
+
+    const existingConjoints = await Conjoint.findAll({ where: { employeId: id }, include: [{ model: Enfant, as: 'enfants' }] }); // tous (y compris supprimés) pour mise à jour
+    const existingConjointIds = new Set(existingConjoints.map(c => c.id));
+    const bodySpouseIds = new Set(spousesBody.filter(s => s.id != null).map(s => parseInt(s.id, 10)).filter(n => !isNaN(n)));
+
+    const spouseIdsByIndex = [];
+    for (let i = 0; i < spousesBody.length; i++) {
+      const s = spousesBody[i];
+      const nom = (s.nom || '').toString().trim();
+      const prenom = (s.prenom || '').toString().trim();
+      const dateNaissance = s.date_naissance ? new Date(s.date_naissance) : null;
+      const dateUnion = s.date_union ? new Date(s.date_union) : new Date();
+      if (!nom || !prenom) return res.status(400).json({ message: 'Conjoint : nom et prenom obligatoires' });
+      const conjointPhoto = photoConjointMap[String(s.id)] || photoConjointMap['new_' + i];
+      const conjointCertificat = certificatMariageMap[String(s.id)] || certificatMariageMap['new_' + i];
+      const pictureVal = conjointPhoto || bodyPathOrNull(s.photo);
+      const civilFileVal = conjointCertificat || bodyPathOrNull(s.certificat_mariage);
+
+      if (s.id != null && existingConjointIds.has(parseInt(s.id, 10))) {
+        const conj = existingConjoints.find(c => c.id === parseInt(s.id, 10));
+        if (conj) {
+          const conjUpdates = {
+            last_name: nom,
+            first_name: prenom,
+            place_of_birth: (s.lieu_naissance || '').toString() || null,
+            profession: (s.profession || '').toString(),
+            type_union: (s.type_union || 'mariage').toString(),
+            date_mariage: dateUnion,
+            statut: (s.statut || 'actif').toString(),
+            civil_file: civilFileVal || null,
+            ...((conjointPhoto || bodyPathOrNull(s.photo)) && { picture: pictureVal || null })
+          };
+          if (dateNaissance) conjUpdates.date_of_birth = dateNaissance;
+          if (s.statut_dossier && ['en_cours_validation', 'valide', 'supprime'].includes(s.statut_dossier)) conjUpdates.statut_dossier = s.statut_dossier;
+          await conj.update(conjUpdates);
+          spouseIdsByIndex[i] = conj.id;
+        }
+      } else {
+        const codeConjoint = 'CONJ-' + id + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+        const statutDossier = (s.statut_dossier && ['en_cours_validation', 'valide', 'supprime'].includes(s.statut_dossier)) ? s.statut_dossier : 'en_cours_validation';
+        const created = await Conjoint.create({
+          employeId: id,
+          last_name: nom,
+          first_name: prenom,
+          date_of_birth: dateNaissance || new Date(),
+          place_of_birth: (s.lieu_naissance || '').toString() || null,
+          profession: (s.profession || '').toString(),
+          type_union: (s.type_union || 'mariage').toString(),
+          date_mariage: dateUnion,
+          statut: (s.statut || 'actif').toString(),
+          civil_file: civilFileVal || null,
+          picture: pictureVal || null,
+          code_conjoint: codeConjoint,
+          gender: 'F',
+          ordre: i,
+          statut_dossier: statutDossier
+        });
+        spouseIdsByIndex[i] = created.id;
+      }
+    }
+
+    const idsToKeep = new Set(spouseIdsByIndex);
+    for (const c of existingConjoints) {
+      if (!idsToKeep.has(c.id)) {
+        await Enfant.update({ statut_dossier: 'supprime' }, { where: { conjointId: c.id } });
+        await c.update({ statut_dossier: 'supprime' });
+      }
+    }
+
+    for (let i = 0; i < spousesBody.length; i++) {
+      const conjointId = spouseIdsByIndex[i];
+      const childrenBody = Array.isArray(spousesBody[i].children) ? spousesBody[i].children : [];
+      const existingEnfants = await Enfant.findAll({ where: { conjointId, employeId: id } }); // tous pour comparer
+      const existingEnfantIds = new Set(existingEnfants.map(e => e.id));
+      const bodyChildIds = new Set(childrenBody.filter(ch => ch.id != null).map(ch => parseInt(ch.id, 10)).filter(n => !isNaN(n)));
+
+      for (let j = 0; j < childrenBody.length; j++) {
+        const ch = childrenBody[j];
+        const nom = (ch.nom || '').toString().trim();
+        const prenom = (ch.prenom || '').toString().trim();
+        const dateNaissance = ch.date_naissance ? new Date(ch.date_naissance) : null;
+        if (!nom || !prenom) return res.status(400).json({ message: 'Enfant : nom et prenom obligatoires' });
+        const sexe = (ch.sexe === 'F' || ch.sexe === 'M') ? ch.sexe : 'M';
+        const statut = (ch.statut || 'a_charge').toString();
+        const childPhoto = ch.id != null ? (photoEnfantMap[String(ch.id)] || bodyPathOrNull(ch.photo)) : (photoEnfantMap['new_' + i + '_' + j] || bodyPathOrNull(ch.photo));
+        const childExtrait = ch.id != null ? (extraitEnfantMap[String(ch.id)] || bodyPathOrNull(ch.extrait_naissance)) : (extraitEnfantMap['new_' + i + '_' + j] || bodyPathOrNull(ch.extrait_naissance));
+        if (ch.id != null && existingEnfantIds.has(parseInt(ch.id, 10))) {
+          const enf = existingEnfants.find(e => e.id === parseInt(ch.id, 10));
+          if (enf) {
+            const enfUpdates = { last_name: nom, first_name: prenom, place_of_birth: (ch.lieu_naissance || '').toString() || null, gender: sexe, statut, conjointId, employeId: id };
+            if (dateNaissance) enfUpdates.date_of_birth = dateNaissance;
+            if (ch.statut_dossier && ['en_cours_validation', 'valide', 'supprime'].includes(ch.statut_dossier)) enfUpdates.statut_dossier = ch.statut_dossier;
+            if (photoEnfantMap[String(ch.id)] !== undefined || bodyPathOrNull(ch.photo) !== null) enfUpdates.picture = childPhoto || null;
+            if (extraitEnfantMap[String(ch.id)] !== undefined || bodyPathOrNull(ch.extrait_naissance) !== null) enfUpdates.extrait_file = childExtrait || null;
+            await enf.update(enfUpdates);
+          }
+        } else {
+          const enfStatutDossier = (ch.statut_dossier && ['en_cours_validation', 'valide', 'supprime'].includes(ch.statut_dossier)) ? ch.statut_dossier : 'en_cours_validation';
+          await Enfant.create({
+            employeId: id,
+            conjointId,
+            last_name: nom,
+            first_name: prenom,
+            date_of_birth: dateNaissance || new Date(),
+            place_of_birth: (ch.lieu_naissance || '').toString() || null,
+            gender: sexe,
+            statut,
+            ordre: j,
+            statut_dossier: enfStatutDossier,
+            picture: childPhoto || null,
+            extrait_file: childExtrait || null
+          });
+        }
+      }
+      for (const e of existingEnfants) {
+        if (!bodyChildIds.has(e.id)) await e.update({ statut_dossier: 'supprime' });
+      }
+    }
+
+    const parentFather = parentsBody.father;
+    const parentMother = parentsBody.mother;
+    const employeUpdates = {};
+    if (parentFather && typeof parentFather === 'object') {
+      if (parentFather.nom != null) employeUpdates.father_last_name = parentFather.nom;
+      if (parentFather.prenom != null) employeUpdates.father_first_name = parentFather.prenom;
+      if (parentFather.date_naissance != null) employeUpdates.father_date_of_birth = parentFather.date_naissance;
+      if (parentFather.statut != null) employeUpdates.father_statut = parentFather.statut;
+    }
+    if (parentMother && typeof parentMother === 'object') {
+      if (parentMother.nom != null) employeUpdates.mother_last_name = parentMother.nom;
+      if (parentMother.prenom != null) employeUpdates.mother_first_name = parentMother.prenom;
+      if (parentMother.date_naissance != null) employeUpdates.mother_date_of_birth = parentMother.date_naissance;
+      if (parentMother.statut != null) employeUpdates.mother_statut = parentMother.statut;
+    }
+    if (Object.keys(employeUpdates).length) await employe.update(employeUpdates);
+
+    const conjointsAfter = await Conjoint.findAll({
+      where: {
+        employeId: id,
+        [Op.or]: [{ statut_dossier: null }, { statut_dossier: { [Op.ne]: 'supprime' } }]
+      },
+      include: [{ model: Enfant, as: 'enfants', required: false }],
+      order: [['ordre', 'ASC']]
+    });
+    const spouses = conjointsAfter.map(c => {
+      const conv = c.toJSON ? c.toJSON() : c;
+      const enfantsActifs = (conv.enfants || []).filter(e => e.statut_dossier !== 'supprime');
+      return {
+        id: conv.id,
+        nom: conv.last_name,
+        prenom: conv.first_name,
+        date_naissance: conv.date_of_birth,
+        lieu_naissance: conv.place_of_birth,
+        profession: conv.profession,
+        type_union: conv.type_union || 'mariage',
+        date_union: conv.date_mariage,
+        statut: conv.statut || 'actif',
+        statut_dossier: conv.statut_dossier || 'en_cours_validation',
+        certificat_mariage: (conv.civil_file && String(conv.civil_file).trim()) ? (conv.civil_file.startsWith('http') ? conv.civil_file : '/' + conv.civil_file.replace(/^\/+/, '')) : null,
+        photo: conv.picture ? (conv.picture.startsWith('http') ? conv.picture : '/' + conv.picture.replace(/^\/+/, '')) : null,
+        children: enfantsActifs.map(e => ({
+          id: e.id,
+          nom: e.last_name,
+          prenom: e.first_name,
+          date_naissance: e.date_of_birth,
+          lieu_naissance: e.place_of_birth,
+          sexe: e.gender,
+          statut: e.statut || (e.date_of_birth && (new Date().getFullYear() - new Date(e.date_of_birth).getFullYear() >= 18) ? 'majeur' : 'a_charge'),
+          statut_dossier: e.statut_dossier || 'en_cours_validation',
+          spouse_id: conv.id,
+          photo: e.picture ? (e.picture.startsWith('http') ? e.picture : '/' + e.picture.replace(/^\/+/, '')) : null,
+          extrait_naissance: (e.extrait_file && String(e.extrait_file).trim()) ? (e.extrait_file.startsWith('http') ? e.extrait_file : '/' + e.extrait_file.replace(/^\/+/, '')) : null
+        }))
+      };
+    });
+    const emp = await Employe.findByPk(id, { attributes: ['father_first_name', 'father_last_name', 'father_date_of_birth', 'father_statut', 'mother_first_name', 'mother_last_name', 'mother_date_of_birth', 'mother_statut'] });
+    const parents = {
+      father: emp && (emp.father_last_name || emp.father_first_name) ? { nom: emp.father_last_name, prenom: emp.father_first_name, date_naissance: emp.father_date_of_birth, statut: emp.father_statut || 'vivant' } : null,
+      mother: emp && (emp.mother_last_name || emp.mother_first_name) ? { nom: emp.mother_last_name, prenom: emp.mother_first_name, date_naissance: emp.mother_date_of_birth, statut: emp.mother_statut || 'vivant' } : null
+    };
+    return res.status(200).json({ spouses, parents });
+  } catch (err) {
+    console.error('[EMPLOYE_FAMILLE_PATCH]', err);
+    return res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+/**
+ * GET /api/v1/employe/:id/cotisations
+ * Historique des cotisations (summary + data par période).
+ * Query optionnels : page (défaut 1), limit (ex. 10) — pagination côté serveur.
+ */
+router.get('/:id/cotisations', EmployeurToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
+    const { error, message } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+    if (error) return res.status(error).json({ message });
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
+
+    const declarations = await Demploye.findAll({
+      where: { employeId: id },
+      include: [{ model: CotisationEmployeur, as: 'cotisation_employeur', attributes: ['id', 'is_paid'] }],
+      order: [['year', 'ASC'], ['periode', 'ASC']]
+    });
+    let totalMois = 0;
+    let totalCotisations = 0;
+    const fullData = declarations.map(d => {
+      const decl = d.toJSON ? d.toJSON() : d;
+      const cot = decl.cotisation_employeur || {};
+      const paid = !!cot.is_paid;
+      if (paid) {
+        totalMois += 1;
+        totalCotisations += Number(decl.total_cotisation || 0);
+      }
+      const periodLabel = decl.periode && decl.year ? `${decl.periode} ${decl.year}` : `${decl.year}`;
+      return {
+        periode: periodLabel,
+        salaire_brut: decl.salary_brut,
+        cotisation_salariale: decl.cotisation_employe,
+        cotisation_patronale: decl.cotisation_emplyeur,
+        total: decl.total_cotisation,
+        statut: paid ? 'paye' : 'en_attente'
+      };
+    });
+    const total = fullData.length;
+    const offset = (page - 1) * limit;
+    const data = fullData.slice(offset, offset + limit);
+
+    const paidDeclarations = declarations.filter(d => (d.toJSON ? d.toJSON() : d).cotisation_employeur?.is_paid);
+    const years = paidDeclarations.length ? paidDeclarations.map(d => d.year).filter(Boolean) : [];
+    const minYear = years.length ? Math.min(...years) : null;
+    const maxYear = years.length ? Math.max(...years) : null;
+    const lastDecl = paidDeclarations.length ? paidDeclarations[paidDeclarations.length - 1] : null;
+    const lastLabel = lastDecl && lastDecl.periode && lastDecl.year ? `${lastDecl.periode} ${lastDecl.year}` : (lastDecl && lastDecl.year ? String(lastDecl.year) : null);
+    return res.status(200).json({
+      summary: {
+        total_mois_cotises: totalMois,
+        total_cotisations: totalCotisations,
+        periode_debut: minYear ? String(minYear) : null,
+        periode_fin: maxYear ? String(maxYear) : null,
+        derniere_cotisation: lastLabel
+      },
+      data,
+      pagination: { total, page, limit }
+    });
+  } catch (err) {
+    console.error('[EMPLOYE_COTISATIONS]', err);
+    return res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+/**
+ * GET /api/v1/employe/:id/career
+ * Relevé de carrière par employeur (avec postes = Carer).
+ */
+router.get('/:id/career', EmployeurToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
+    const { error, message } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+    if (error) return res.status(error).json({ message });
+    const carrieres = await Carer.findAll({
+      where: { employeId: id },
+      include: [{ association: 'employeur', attributes: ['id', 'raison_sociale', 'no_immatriculation', 'adresse', 'description'] }],
+      order: [['date_entre', 'ASC']]
+    });
+    let totalMois = 0;
+    let totalCotSalariale = 0;
+    let totalCotPatronale = 0;
+    const data = await Promise.all(carrieres.map(async (car) => {
+      const empId = car.employeurId;
+      const decls = await Demploye.findAll({
+        where: { employeId: id, employeurId: empId },
+        include: [{ model: CotisationEmployeur, as: 'cotisation_employeur', attributes: ['id', 'is_paid'] }]
+      });
+      const declsPaid = decls.filter(d => (d.toJSON ? d.toJSON() : d).cotisation_employeur?.is_paid);
+      const moisCotises = declsPaid.length;
+      const totalSalaireBrut = declsPaid.reduce((s, d) => s + Number(d.salary_brut || 0), 0);
+      const cotSal = declsPaid.reduce((s, d) => s + Number(d.cotisation_employe || 0), 0);
+      const cotPat = declsPaid.reduce((s, d) => s + Number(d.cotisation_emplyeur || 0), 0);
+      totalMois += moisCotises;
+      totalCotSalariale += cotSal;
+      totalCotPatronale += cotPat;
+      const emp = car.employeur || {};
+      const dateFinLabel = car.date_sortie ? null : 'En cours';
+      const postes = [{
+        id: car.id,
+        titre: car.titre || car.employeur?.description || 'Poste',
+        date_debut: car.date_entre,
+        date_fin: car.date_sortie,
+        duree: car.date_entre && car.date_sortie ? `${Math.round((new Date(car.date_sortie) - new Date(car.date_entre)) / (1000 * 60 * 60 * 24 * 30))} mois` : null,
+        salaire_brut: car.salaire,
+        departement: car.departement,
+        type_contrat: car.type_contrat,
+        responsabilites: car.responsabilites
+      }];
+      return {
+        id: car.id,
+        employeur: emp.raison_sociale || '',
+        numero_employeur: emp.no_immatriculation || '',
+        adresse: emp.adresse || '',
+        secteur_activite: emp.description || '',
+        date_debut: car.date_entre,
+        date_fin: car.date_sortie,
+        date_fin_label: dateFinLabel || (car.date_sortie ? undefined : 'En cours'),
+        mois_cotises: moisCotises,
+        total_salaire_brut: totalSalaireBrut,
+        cotisation_salariale: cotSal,
+        cotisation_patronale: cotPat,
+        total_cotisations: cotSal + cotPat,
+        statut: car.date_sortie ? 'termine' : 'actif',
+        postes
+      };
+    }));
+    return res.status(200).json({
+      summary: {
+        nombre_employeurs: carrieres.length,
+        total_mois_cotises: totalMois,
+        total_cotisation_salariale: totalCotSalariale,
+        total_cotisation_patronale: totalCotPatronale
+      },
+      data
+    });
+  } catch (err) {
+    console.error('[EMPLOYE_CAREER]', err);
+    return res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+/**
+ * GET /api/v1/employe/:employeeId/career/:employerId
+ * Détail d'un épisode de carrière chez un employeur.
+ */
+router.get('/:employeeId/career/:employerId', EmployeurToken, async (req, res) => {
+  try {
+    const employeeId = parseInt(req.params.employeeId);
+    const employerId = parseInt(req.params.employerId);
+    if (isNaN(employeeId) || isNaN(employerId)) return res.status(400).json({ message: 'ID invalide' });
+    const { error, message } = await ensureEmployeBelongsToEmployeur(employeeId, req.user.user_id);
+    if (error) return res.status(error).json({ message });
+    const car = await Carer.findOne({
+      where: { employeId: employeeId, employeurId: employerId },
+      include: [{ association: 'employeur' }]
+    });
+    if (!car) return res.status(404).json({ message: 'Épisode de carrière non trouvé' });
+    const decls = await Demploye.findAll({
+      where: { employeId: employeeId, employeurId: employerId },
+      include: [{ model: CotisationEmployeur, as: 'cotisation_employeur', attributes: ['id', 'is_paid'] }]
+    });
+    const declsPaid = decls.filter(d => (d.toJSON ? d.toJSON() : d).cotisation_employeur?.is_paid);
+    const emp = car.employeur || {};
+    const postes = [{
+      id: car.id,
+      titre: car.titre || 'Poste',
+      date_debut: car.date_entre,
+      date_fin: car.date_sortie,
+      duree: car.date_entre && car.date_sortie ? `${Math.round((new Date(car.date_sortie) - new Date(car.date_entre)) / (1000 * 60 * 60 * 24 * 30))} mois` : null,
+      salaire_brut: car.salaire,
+      departement: car.departement,
+      type_contrat: car.type_contrat,
+      responsabilites: car.responsabilites
+    }];
+    const cotisations = decls.map(d => {
+      const decl = d.toJSON ? d.toJSON() : d;
+      const cot = decl.cotisation_employeur || {};
+      const periodLabel = decl.periode && decl.year ? `${decl.periode} ${decl.year}` : `${decl.year}`;
+      return {
+        periode: periodLabel,
+        salaire_brut: decl.salary_brut,
+        cotisation_salariale: decl.cotisation_employe,
+        cotisation_patronale: decl.cotisation_emplyeur,
+        total: decl.total_cotisation,
+        statut: cot.is_paid ? 'paye' : 'en_attente'
+      };
+    });
+    return res.status(200).json({
+      id: car.id,
+      employeur: emp.raison_sociale || '',
+      numero_employeur: emp.no_immatriculation || '',
+      adresse: emp.adresse || '',
+      secteur_activite: emp.description || '',
+      date_debut: car.date_entre,
+      date_fin: car.date_sortie,
+      mois_cotises: declsPaid.length,
+      total_salaire_brut: declsPaid.reduce((s, d) => s + Number(d.salary_brut || 0), 0),
+      cotisation_salariale: declsPaid.reduce((s, d) => s + Number(d.cotisation_employe || 0), 0),
+      cotisation_patronale: declsPaid.reduce((s, d) => s + Number(d.cotisation_emplyeur || 0), 0),
+      total_cotisations: declsPaid.reduce((s, d) => s + Number(d.total_cotisation || 0), 0),
+      statut: car.date_sortie ? 'termine' : 'actif',
+      postes,
+      cotisations
+    });
+  } catch (err) {
+    console.error('[EMPLOYE_CAREER_EMPLOYER]', err);
+    return res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+/**
+ * GET /api/v1/employe/:id/card/pdf
+ * Génère et renvoie le PDF de la carte d'assuré (binaire). Design eCNSS.
+ */
+router.get('/:id/card/pdf', EmployeurToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
+    const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+    if (error) return res.status(error).json({ message });
+    const full = await Employe.findByPk(employe.id, { attributes: ['id', 'first_name', 'last_name', 'no_immatriculation', 'avatar', 'immatriculation_date', 'worked_date', 'createdAt'] });
+    if (!full) return res.status(404).json({ message: 'Employé non trouvé' });
+    const data = full.toJSON ? full.toJSON() : full;
+    const pdfBuffer = await generateCarteAssurePdfBuffer(data);
+    const nom = (data.last_name || 'assure').replace(/\s+/g, '-');
+    const filename = `carte-assure-${nom}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.status(200).send(pdfBuffer);
+  } catch (err) {
+    console.error('[EMPLOYE_CARD_PDF]', err);
+    return res.status(500).json({ message: 'Erreur lors de la génération de la carte' });
+  }
+});
+
+/**
+ * POST /api/v1/employe/:id/card/send-email
+ * Envoie la carte d'assuré (PDF) par email. Body optionnel : { "email": "..." }. Sinon envoi à l'email de l'employé.
+ */
+let sendMailCarteAssure;
+try {
+  const u2 = require('../../utility2');
+  sendMailCarteAssure = u2.sendMailCarteAssure || null;
+} catch {
+  sendMailCarteAssure = null;
+}
+router.post('/:id/card/send-email', EmployeurToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
+    const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+    if (error) return res.status(error).json({ message });
+    const full = await Employe.findByPk(employe.id, {
+      attributes: ['id', 'first_name', 'last_name', 'no_immatriculation', 'avatar', 'immatriculation_date', 'worked_date', 'createdAt', 'email'],
+      include: [{ association: 'employeur', attributes: ['raison_sociale'] }]
+    });
+    if (!full) return res.status(404).json({ message: 'Employé non trouvé' });
+    const toEmail = (req.body && req.body.email) ? req.body.email.trim() : (full.email || '').trim();
+    if (!toEmail) return res.status(400).json({ message: 'Aucune adresse email (fournissez "email" dans le body ou l\'employé doit avoir un email)' });
+    const data = full.toJSON ? full.toJSON() : full;
+    const pdfBuffer = await generateCarteAssurePdfBuffer(data);
+    if (sendMailCarteAssure) {
+      await sendMailCarteAssure(toEmail, `${data.first_name || ''} ${data.last_name || ''}`.trim(), pdfBuffer);
+    } else {
+      return res.status(503).json({ message: 'Envoi d\'email non configuré (utility2.sendMailCarteAssure)' });
+    }
+    return res.status(200).json({ message: 'Carte envoyée avec succès', sent_to: toEmail });
+  } catch (err) {
+    console.error('[EMPLOYE_CARD_SEND_EMAIL]', err);
+    return res.status(500).json({ message: 'Erreur lors de l\'envoi de la carte' });
+  }
+});
+
+/**
+ * GET /api/v1/employe/:id/card
+ * Métadonnées de la carte (statut, date émission, employeur actuel) pour affichage "Carte à jour".
+ */
+router.get('/:id/card', EmployeurToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
+    const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+    if (error) return res.status(error).json({ message });
+    const full = await Employe.findByPk(employe.id, {
+      attributes: ['id', 'no_immatriculation', 'immatriculation_date', 'worked_date', 'employeurId', 'is_out'],
+      include: [{ association: 'employeur', attributes: ['id', 'raison_sociale'] }]
+    });
+    if (!full) return res.status(404).json({ message: 'Employé non trouvé' });
+    const e = full.toJSON ? full.toJSON() : full;
+    const dateEmission = e.immatriculation_date || e.worked_date || full.createdAt;
+    const dateStr = dateEmission ? new Date(dateEmission).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' }) : null;
+    return res.status(200).json({
+      statut_carte: e.is_out ? 'inactive' : 'active',
+      date_emission: dateStr,
+      date_validite_carte: null,
+      type_assure: 'Régime Général',
+      employeur_actuel: (e.employeur && e.employeur.raison_sociale) ? e.employeur.raison_sociale : null,
+      no_immatriculation: e.no_immatriculation
+    });
+  } catch (err) {
+    console.error('[EMPLOYE_CARD]', err);
+    return res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+/**
+ * GET /api/v1/employe/:id/prestations
+ * Prestations actives, demandes en cours, éligibilité (structure minimale).
+ */
+router.get('/:id/prestations', EmployeurToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
+    const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+    if (error) return res.status(error).json({ message });
+    const demandes = await Demande.findAll({
+      where: { employeurId: employe.employeurId },
+      order: [['createdAt', 'DESC']],
+      limit: 20
+    });
+    const demandesEnCours = demandes.filter(d => d.status && !d.response).map(d => ({
+      id: d.id,
+      type: d.motif || 'Demande',
+      reference: d.reference || `DEM-${d.id}`,
+      date_depot: d.createdAt,
+      statut: d.status || 'En cours'
+    }));
+    return res.status(200).json({
+      actives: [],
+      demandes_en_cours: demandesEnCours,
+      eligibilite: []
+    });
+  } catch (err) {
+    console.error('[EMPLOYE_PRESTATIONS]', err);
+    return res.status(500).json({ message: 'Erreur serveur' });
   }
 });
 
@@ -1661,38 +2528,23 @@ router.post('/update_employe_cni/:employeId', EmployeurToken, employeUpload.sing
 
 /**
  * POST /api/v1/employe/update_employe_avatar/:employeId
- * 
- * Met à jour uniquement la photo de profil d'un employé.
- * Middleware: EmployeurToken, upload.fields([...])
+ * Met à jour uniquement la photo de profil (legacy). Préférer PATCH /api/v1/employe/:id/avatar.
  */
 router.post('/update_employe_avatar/:employeId', EmployeurToken, employeUpload.fields([{ name: 'avatar', maxCount: 1 }]), async (req, res) => {
   try {
     const employeId = parseInt(req.params.employeId);
     const files = req.files;
-
-    if (isNaN(employeId)) {
-      return res.status(400).json({ message: 'ID invalide' });
-    }
-
-    if (!files['avatar'] || !files['avatar'][0]) {
-      return res.status(400).json({ message: 'Photo de profil requise' });
-    }
+    if (isNaN(employeId)) return res.status(400).json({ message: 'ID invalide' });
+    if (!files || !files['avatar'] || !files['avatar'][0]) return res.status(400).json({ message: 'Photo de profil requise' });
 
     const employe = await Employe.findByPk(employeId);
+    if (!employe) return res.status(404).json({ message: 'Employé non trouvé' });
+    if (employe.employeurId !== req.user.user_id) return res.status(403).json({ message: 'Accès refusé' });
 
-    if (!Employe) {
-      return res.status(404).json({ message: 'Employé non trouvé' });
-    }
-
-    // Vérifie que l'employé appartient à l'employeur
-    if (Employe.employeurId !== req.user.user_id) {
-      return res.status(403).json({ message: 'Accès refusé' });
-    }
-
-    Employe.avatar = files['avatar'][0].path;
-    await Employe.save();
-
-    return res.status(200).json({ message: "ok ok" });
+    const relativePath = 'uploads/' + path.basename(files['avatar'][0].path);
+    await employe.update({ avatar: relativePath });
+    const avatar_url = '/' + relativePath.replace(/^\/+/, '');
+    return res.status(200).json({ message: 'ok', avatar: relativePath, avatar_url });
   } catch (error) {
     console.error('[EMPLOYE_UPDATE_AVATAR] Error:', error);
     return res.status(500).json({ message: 'Erreur Interne' });

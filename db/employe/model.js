@@ -78,7 +78,7 @@ const Employe = sequelize.define('employe', {
   no_immatriculation: {
     type: DataTypes.STRING,
     allowNull: true,
-    unique: true
+    
   },
   immatriculation_date: {
     type: DataTypes.DATE,
@@ -132,6 +132,34 @@ const Employe = sequelize.define('employe', {
     type: DataTypes.DATE,
     allowNull: true
   },
+  exit_reason: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  notice_period: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  exit_notes: {
+    type: DataTypes.TEXT,
+    allowNull: true
+  },
+  father_date_of_birth: {
+    type: DataTypes.DATE,
+    allowNull: true
+  },
+  mother_date_of_birth: {
+    type: DataTypes.DATE,
+    allowNull: true
+  },
+  father_statut: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  mother_statut: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
   request_can_pay: {
     type: DataTypes.BOOLEAN,
     defaultValue: false
@@ -151,6 +179,21 @@ const Employe = sequelize.define('employe', {
   date_first_embauche: {
     type: DataTypes.DATE,
     allowNull: true
+  },
+  has_biometric: {
+    type: DataTypes.BOOLEAN,
+    allowNull: true,
+    defaultValue: false
+  },
+  card_expiry: {
+    type: DataTypes.DATEONLY,
+    allowNull: true
+  },
+  biometric_status: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: 'nouveau',
+    comment: 'actif | en_attente | expiré | nouveau'
   },
   employeurId: {
     type: DataTypes.INTEGER,

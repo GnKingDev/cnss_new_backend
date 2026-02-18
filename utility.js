@@ -206,7 +206,7 @@ async function getFileAppelCotisation(name, cotisation, facture_name, employeur,
 
   let browser;
   try {
-    browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
     const page = await browser.newPage();
     await page.setContent(factureHtml, { waitUntil: 'networkidle0' });
     await page.emulateMediaType('screen');
@@ -269,7 +269,7 @@ async function generatedNotification(name, employeur, code) {
 
   let browser;
   try {
-    browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
     const page = await browser.newPage();
     await page.setContent(notifHtml, { waitUntil: 'networkidle0' });
     await page.emulateMediaType('screen');

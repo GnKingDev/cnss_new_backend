@@ -76,6 +76,19 @@ const Conjoint = sequelize.define('Conjoint', {
     type: DataTypes.INTEGER,
     allowNull: true
   },
+  type_union: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  statut: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  statut_dossier: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: 'en_cours_validation'
+  },
   employeId: {
     type: DataTypes.INTEGER,
     allowNull: true,

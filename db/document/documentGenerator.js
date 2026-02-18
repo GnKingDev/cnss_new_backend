@@ -251,7 +251,7 @@ async function generateFactureBuffer(document, employeur) {
 
   let browser;
   try {
-    browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
     const page = await browser.newPage();
     await page.setContent(factureHtml, { waitUntil: 'networkidle0' });
     await page.emulateMediaType('screen');
@@ -364,7 +364,7 @@ async function generateQuittanceBuffer(document, employeur) {
 
   let browser;
   try {
-    browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
     const page = await browser.newPage();
     await page.setContent(quittanceHtml, { waitUntil: 'networkidle0' });
     await page.emulateMediaType('screen');
@@ -407,7 +407,7 @@ async function generateNotificationBuffer(document, employeur) {
 
   let browser;
   try {
-    browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
     const page = await browser.newPage();
     await page.setContent(notifHtml, { waitUntil: 'networkidle0' });
     await page.emulateMediaType('screen');
@@ -489,7 +489,7 @@ async function generateRecepisseBuffer(document, employeur) {
 
   let browser;
   try {
-    browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'networkidle0' });
     await page.emulateMediaType('screen');

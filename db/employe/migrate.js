@@ -8,5 +8,5 @@ const migrate = async () => {
     console.error('❌ Error migrating Employe table:', error);
   }
 };
-
+migrate();
 module.exports = migrate;

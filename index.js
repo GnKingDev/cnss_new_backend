@@ -11,12 +11,30 @@ const PORT = process.env.PORT || 3000;
 
 // Dossier des PDFs (factures, quittances, etc.) — contenu servi sous /api/v1/docsx/
 const docPath = path.join(__dirname, 'document/docs');
+// Photos / avatars employés — GET /uploads/xxx
+const uploadsPath = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsPath)) fs.mkdirSync(uploadsPath, { recursive: true });
 
-// Middleware
+// Middleware (limite JSON augmentée pour PATCH famille avec photos en base64)
 app.use(morgan('tiny'));
 app.use(cors());
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+// Pour PATCH .../famille et POST/PATCH .../prestations/demandes en multipart, ne pas parser le body : Multer le fera
+const isMultipartFamille = (req) => req.method === 'PATCH' && req.originalUrl.includes('/famille') &&
+  req.headers['content-type'] && String(req.headers['content-type']).startsWith('multipart/form-data');
+const isMultipartPrestation = (req) => (req.method === 'POST' || req.method === 'PATCH') && req.originalUrl.includes('/prestations/demandes') &&
+  req.headers['content-type'] && String(req.headers['content-type']).startsWith('multipart/form-data');
+const isMultipartReclamation = (req) => req.method === 'POST' && req.originalUrl.includes('/reclamation/demandes') &&
+  req.headers['content-type'] && String(req.headers['content-type']).startsWith('multipart/form-data');
+const skipBodyParse = (req) => isMultipartFamille(req) || isMultipartPrestation(req) || isMultipartReclamation(req);
+app.use((req, res, next) => {
+  if (skipBodyParse(req)) return next();
+  bodyParser.json({ limit: '10mb' })(req, res, next);
+});
+app.use((req, res, next) => {
+  if (skipBodyParse(req)) return next();
+  bodyParser.urlencoded({ extended: true, limit: '10mb' })(req, res, next);
+});
+app.use('/uploads', express.static(uploadsPath));
 
 // Import database connection
 const sequelize = require('./db/db.connection');
@@ -51,6 +69,9 @@ const succursaleRoutes = require('./db/succursale/route');
 const dirgaUserRoutes = require('./db/dirga_user/route');
 const adhesionRoutes = require('./db/adhesion/route');
 const affiliationVolontaireRoutes = require('./db/affiliation-volontaire/route');
+const prestationRoutes = require('./db/prestation/route');
+const biometrieRoutes = require('./db/biometrie/route');
+const reclamationRoutes = require('./db/reclamation/route');
 
 // API Routes
 app.use('/api/pays', paysRoutes);
@@ -89,6 +110,9 @@ app.use('/api/v1/dirga', dirgaUserRoutes); // Updated to match documentation
 app.use('/api/dirga-users', dirgaUserRoutes); // Keep for backward compatibility
 app.use('/api/adhesions', adhesionRoutes);
 app.use('/api/affiliations-volontaires', affiliationVolontaireRoutes);
+app.use('/api/v1/prestations', prestationRoutes);
+app.use('/api/v1/biometrie', biometrieRoutes);
+app.use('/api/v1/reclamation', reclamationRoutes);
 
 // Servir les PDFs depuis document/docs — GET /api/v1/docsx/:filename.pdf
 app.get('/api/v1/docsx/:filename', (req, res) => {

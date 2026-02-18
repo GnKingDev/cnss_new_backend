@@ -32,6 +32,26 @@ const Carer = sequelize.define('carer', {
       model: Employeur,
       key: 'id'
     }
+  },
+  titre: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  salaire: {
+    type: DataTypes.BIGINT,
+    allowNull: true
+  },
+  departement: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  type_contrat: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  responsabilites: {
+    type: DataTypes.TEXT,
+    allowNull: true
   }
 }, {
   tableName: 'carriers',

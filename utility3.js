@@ -148,7 +148,7 @@ async function genereListePdf(data, employeur) {
   </body>
 </html>`;
 
-    browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'networkidle0' });
     await page.emulateMediaType('screen');
@@ -226,7 +226,7 @@ async function generelistDeclaration(data, employeur, periode, year) {
   </body>
 </html>`;
 
-    browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'networkidle0' });
     await page.emulateMediaType('screen');
