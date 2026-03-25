@@ -10,6 +10,91 @@ const puppeteer = require('puppeteer');
 const QRCode = require('qrcode');
 const { Op } = require('sequelize');
 
+/** Même liste d'arguments que getFileAppelCotisation (utility.js) */
+const PUPPETEER_LAUNCH_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-gpu',
+  '--disable-software-rasterizer',
+  '--no-first-run',
+  '--disable-extensions',
+  '--disable-background-networking',
+  '--disable-default-apps',
+  '--disable-sync',
+  '--metrics-recording-only',
+  '--mute-audio',
+  '--no-default-browser-check'
+];
+
+/**
+ * Résout le binaire Chrome local (chrome/) – même approche que utility.js getFileAppelCotisation.
+ * Utiliser un Chrome local améliore la stabilité et évite les "socket hang up".
+ */
+function resolveChromeExecutable() {
+  const chromeDir = path.join(path.resolve(__dirname, '../..'), 'chrome');
+  if (!fs.existsSync(chromeDir)) return null;
+  try {
+    const dirs = fs.readdirSync(chromeDir);
+    const macDir = dirs.find((d) => d.startsWith('mac_arm-') || d.startsWith('mac-'));
+    if (macDir) {
+      const base = path.join(chromeDir, macDir, 'chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing');
+      if (fs.existsSync(base)) return base;
+    }
+    const linuxDir = dirs.find((d) => d.startsWith('linux-'));
+    if (linuxDir) {
+      const linuxPath = path.join(chromeDir, linuxDir, 'chrome-linux64', 'chrome');
+      if (fs.existsSync(linuxPath)) return linuxPath;
+    }
+  } catch (err) {
+    console.warn('[documentGenerator] Chrome local non trouvé:', err.message);
+  }
+  return null;
+}
+
+function getPuppeteerLaunchOptions() {
+  const opts = { headless: 'new', args: PUPPETEER_LAUNCH_ARGS, timeout: 30000, protocolTimeout: 60000 };
+  const executablePath = resolveChromeExecutable();
+  if (executablePath) opts.executablePath = executablePath;
+  return opts;
+}
+
+function isRetryableError(err) {
+  const msg = (err && err.message) ? String(err.message) : '';
+  const code = err && err.code;
+  return code === 'ECONNRESET' || code === 'ECONNREFUSED' || /socket hang up|Target closed|Protocol error/i.test(msg);
+}
+
+/**
+ * Lance le navigateur, exécute la fonction avec la page, puis ferme le navigateur.
+ * En cas d'erreur "socket hang up" / ECONNRESET, réessaie une fois.
+ */
+async function withBrowser(fn, maxRetries = 2) {
+  const launchOpts = getPuppeteerLaunchOptions();
+  let lastErr;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    let browser;
+    try {
+      browser = await puppeteer.launch(launchOpts);
+      const page = await browser.newPage();
+      const result = await fn(page, browser);
+      await browser.close().catch(() => {});
+      return result;
+    } catch (err) {
+      lastErr = err;
+      if (browser) {
+        await browser.close().catch(() => {});
+      }
+      if (attempt < maxRetries && isRetryableError(err)) {
+        console.warn(`[documentGenerator] Tentative ${attempt} échouée (${err.message}), nouvel essai...`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 const ROOT_DIR = path.resolve(__dirname, '../..');
 const IMAGE_PATHS = {
   logo: path.join(ROOT_DIR, 'CNSS.jpg'),
@@ -100,11 +185,10 @@ function detectDocumentType(document) {
 }
 
 /**
- * Génère le buffer PDF pour un document de type facture
+ * Génère le buffer PDF pour un document de type facture (appel de cotisations).
+ * Délègue à getFileAppelCotisation (utility.js) pour utiliser exactement le même flux que l'appel de cotisation.
  */
 async function generateFactureBuffer(document, employeur) {
-  // Extraire la période et l'année depuis le nom du document
-  // Format attendu: "Facture-PERIODE-ANNEE" ou "Facture complémentaire PERIODE-ANNEE"
   const nameMatch = document.name.match(/Facture(?:\s+complémentaire)?[-\s]+([^-]+)-(\d{4})/i);
   if (!nameMatch) {
     throw new Error('Impossible de déterminer la période et l\'année depuis le nom du document');
@@ -113,7 +197,6 @@ async function generateFactureBuffer(document, employeur) {
   const periode = nameMatch[1].trim();
   const year = parseInt(nameMatch[2], 10);
 
-  // Trouver la cotisation correspondante
   const cotisation = await CotisationEmployeur.findOne({
     where: {
       employeurId: document.employeurId,
@@ -135,136 +218,16 @@ async function generateFactureBuffer(document, employeur) {
     throw new Error(`Cotisation non trouvée pour la période ${periode} ${year}`);
   }
 
-  // Générer le PDF en buffer
-  const logo = readImageBase64(IMAGE_PATHS.logo);
-  const simandou = readImageBase64(IMAGE_PATHS.simandou);
-  const codeQR = await generateQRCode();
+  const employeurRecord = employeur || cotisation.employeur || {};
+  const cotisationPlain = cotisation.get ? cotisation.get({ plain: true }) : cotisation;
+  const factureName = (document.name || 'facture').replace(/\.pdf$/i, '');
   const code = document.code || '';
 
-  const emp = employeur || cotisation.employeur || {};
-  const cot = cotisation || {};
-  const fmt = (n) => (n != null && !isNaN(n) ? Number(n).toLocaleString('en-US') : '0');
-
-  // Utiliser le HTML de facture existant (similaire à utility.js)
-  const factureHtml = `
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Appel de cotisations</title>
-  <style>
-    @page { margin: 0cm 0cm; }
-    body { margin-top: 2cm; margin-left: 2cm; margin-right: 2cm; margin-bottom: 2cm; font-family: 'Poppins', sans-serif; }
-    header { position: fixed; top: 0; left: 0; right: 0; height: 4cm; }
-    main { position: relative; top: 80px !important; }
-    footer { position: fixed; bottom: 0; left: 0; right: 0; height: 2cm; display: flex !important; }
-    table { border-collapse: collapse; }
-    th, td { border: 1px solid #000; }
-  </style>
-</head>
-<body>
-  <header>
-    <div style="display: flex">
-      <div style="width: 35%">
-        <img src="data:image/png;base64,${logo}" width="200" height="100" alt="CNSS" />
-      </div>
-      <div style="width: 40%; margin-top: 15px; text-align: center">
-        <span style="font-size: 20px">RÉPUBLIQUE DE GUINÉE</span>
-        <table style="width: 100%">
-          <tr><td>Travail - Justice - Solidarité</td></tr>
-          <tr><td>Caisse Nationale de Sécurité Sociale</td></tr>
-        </table>
-        <table style="width: 100%">
-          <tr>
-            <td style="background-color: #ff0000; width: 15%; height: 2px"></td>
-            <td style="background-color: #ffff00; width: 15%"></td>
-            <td style="background-color: #008000; width: 15%"></td>
-          </tr>
-        </table>
-      </div>
-      <div style="width: 35%">
-        <img src="data:image/png;base64,${simandou}" width="150" height="150" style="float: right; padding: 5px; position: relative; top: -10px" alt="" />
-      </div>
-    </div>
-  </header>
-  <main style="font-size: 14px">
-    <div style="text-align: center; font-size: 2rem; margin-left: 15px; margin-bottom: 10px">APPEL DE COTISATIONS</div>
-    <table style="margin-left: 15px">
-      <tr><td>NOM OU RAISON SOCIALE DE L'EMPLOYEUR :</td><td>${emp.raison_sociale || ''}</td></tr>
-    </table>
-    <div style="display: flex; margin: 15px">
-      <div style="width: 35%"><span>ADRESSE COMPLÈTE : ${emp.adresse || ''}</span></div>
-      <div style="width: 35%"><span>EMAIL : ${emp.email || ''}</span></div>
-      <div style="width: 35%"><span>TEL : +224 ${emp.phone_number || ''}</span></div>
-    </div>
-    <div style="display: flex; margin: 15px">
-      <div style="width: 25%; border: 1px solid #000; padding: 5px; margin-right: 20px"><span>PÉRIODE : ${periode}/${cot.year || ''}</span></div>
-      <div style="width: 35%; border: 1px solid #000; padding: 5px; margin-left: 30px"><span>NUMÉRO EMPLOYEUR : ${emp.no_immatriculation || ''}</span></div>
-    </div>
-    <p style="margin-left: 15px">
-      Votre paiement doit parvenir à la CNSS au plus tard le 20 du mois suivant celui pour lequel les cotisations sont dues. Faute de quoi une majoration de retard de 5% sera appliquée.
-    </p>
-    <div style="display: flex; margin-left: 15px">
-      <table style="width: 40%; margin-right: 20px">
-        <tr><td>Effectif embauché le mois en cours</td><td style="text-align: right">${cot.effectif_embauche ?? ''}</td></tr>
-        <tr><td>Effectif ayant quitté au cours du mois</td><td style="text-align: right">${cot.effectif_leave ?? ''}</td></tr>
-        <tr><td>Effectif du mois</td><td style="text-align: right">${cot.current_effectif ?? ''}</td></tr>
-        <tr><td>Salaire total payé en cours du mois</td><td style="text-align: right">${fmt(cot.total_salary)}</td></tr>
-        <tr><td>Salaire total soumis à cotisation</td><td style="text-align: right">${fmt(cot.total_salary_soumis_cotisation)}</td></tr>
-      </table>
-      <div style="width: 60%">
-        <table style="width: 100%">
-          <thead>
-            <tr style="background-color: rgb(108, 216, 108)">
-              <th>Branches</th><th>Taux</th><th>Salaire soumis</th><th>Cotisation</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr><td>Prestations Familiales</td><td style="text-align: center">6.0%</td><td style="text-align: right">${fmt(cot.total_salary_soumis_cotisation)}</td><td style="text-align: right">${fmt(cot.prestation_familiale)}</td></tr>
-            <tr><td>Risques Professionnels</td><td style="text-align: center">4.0%</td><td style="text-align: right">${fmt(cot.total_salary_soumis_cotisation)}</td><td style="text-align: right">${fmt(cot.risque_professionnel)}</td></tr>
-            <tr><td>Assurance Maladie</td><td style="text-align: center">6.5%</td><td style="text-align: right">${fmt(cot.total_salary_soumis_cotisation)}</td><td style="text-align: right">${fmt(cot.assurance_maladie)}</td></tr>
-            <tr><td>Vieillesse - Décès - invalidité</td><td style="text-align: center">6.5%</td><td style="text-align: right">${fmt(cot.total_salary_soumis_cotisation)}</td><td style="text-align: right">${fmt(cot.vieillesse)}</td></tr>
-            <tr><td colspan="3">Total</td><td style="text-align: right">${fmt(cot.total_branche)}</td></tr>
-          </tbody>
-        </table>
-        <div style="display: flex; width: 100%; margin-top: 10px">
-          <div style="width: 50%"><span>NB: Plancher en vigueur: 550 000 GNF</span></div>
-          <div style="width: 50%"><span style="text-align: right">Plafond en vigueur: 2 500 000 GNF</span></div>
-        </div>
-      </div>
-    </div>
-    <div style="text-align: left; margin-top: 23px; width: 80%">
-      ${codeQR ? `<img src="${codeQR}" alt="QR" />` : ''}
-      <p><strong>CODE : ${code || ''}</strong></p>
-    </div>
-  </main>
-  <footer>
-    <div style="text-align: center; font-size: 12px; width: 100%">
-      <span style="font-weight: bold">République de Guinée</span><br />
-      <span>Caisse Nationale de sécurité Sociale, Kouléwondy - Kaloum BP 138</span><br />
-      <span>République de Guinée | www.cnss.gov.gn</span>
-    </div>
-  </footer>
-</body>
-</html>`;
-
-  let browser;
-  try {
-    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
-    const page = await browser.newPage();
-    await page.setContent(factureHtml, { waitUntil: 'networkidle0' });
-    await page.emulateMediaType('screen');
-    const pdfBuffer = await page.pdf({ format: 'A4', landscape: true, printBackground: true });
-    return Buffer.from(pdfBuffer);
-  } catch (err) {
-    console.error('[documentGenerator] Erreur génération facture:', err.message);
-    throw err;
-  } finally {
-    if (browser) {
-      await browser.close().catch(() => {});
-    }
+  const result = await getFileAppelCotisation(factureName, cotisationPlain, 'FACTURE', employeurRecord, code);
+  if (result && result.buffer) {
+    return Buffer.isBuffer(result.buffer) ? result.buffer : Buffer.from(result.buffer);
   }
+  throw new Error('getFileAppelCotisation n\'a pas renvoyé de buffer');
 }
 
 /**
@@ -362,22 +325,15 @@ async function generateQuittanceBuffer(document, employeur) {
     <footer><div style="text-align:center;font-size:12px;width:100%"><span style="font-weight:bold">République de Guinée</span><br/><span>Caisse Nationale de sécurité Sociale, Kouléwondy - Kaloum BP 138</span><br/><span>République de Guinée | www.ecnss.gov.gn | Tel: 625565616</span></div></footer>
     </body></html>`;
 
-  let browser;
-  try {
-    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
-    const page = await browser.newPage();
-    await page.setContent(quittanceHtml, { waitUntil: 'networkidle0' });
+  return withBrowser(async (page) => {
+    await page.setContent(quittanceHtml, { waitUntil: 'load', timeout: 30000 });
     await page.emulateMediaType('screen');
     const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
     return Buffer.from(pdfBuffer);
-  } catch (err) {
+  }).catch((err) => {
     console.error('[documentGenerator] Erreur génération quittance:', err.message);
     throw err;
-  } finally {
-    if (browser) {
-      await browser.close().catch(() => {});
-    }
-  }
+  });
 }
 
 /**
@@ -405,22 +361,15 @@ async function generateNotificationBuffer(document, employeur) {
   </main>
   <footer><div style="text-align:center;font-size:12px;width:100%"><span style="font-weight:bold">République de Guinée</span><br/><span>Caisse Nationale de sécurité Sociale, Kouléwondy - Kaloum BP 138</span><br/><span>République de Guinée | www.cnss.gov.gn</span></div></footer></body></html>`;
 
-  let browser;
-  try {
-    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
-    const page = await browser.newPage();
-    await page.setContent(notifHtml, { waitUntil: 'networkidle0' });
+  return withBrowser(async (page) => {
+    await page.setContent(notifHtml, { waitUntil: 'load', timeout: 30000 });
     await page.emulateMediaType('screen');
     const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
     return Buffer.from(pdfBuffer);
-  } catch (err) {
+  }).catch((err) => {
     console.error('[documentGenerator] Erreur génération notification:', err.message);
     throw err;
-  } finally {
-    if (browser) {
-      await browser.close().catch(() => {});
-    }
-  }
+  });
 }
 
 /**
@@ -487,22 +436,15 @@ async function generateRecepisseBuffer(document, employeur) {
     <footer><div style="text-align:center;font-size:12px;width:100%"><span style="font-weight:bold">République de Guinée</span><br/><span>Caisse Nationale de sécurité Sociale, Kouléwondy - Kaloum BP 138</span></div></footer>
     </body></html>`;
 
-  let browser;
-  try {
-    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+  return withBrowser(async (page) => {
+    await page.setContent(html, { waitUntil: 'load', timeout: 30000 });
     await page.emulateMediaType('screen');
     const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
     return Buffer.from(pdfBuffer);
-  } catch (err) {
+  }).catch((err) => {
     console.error('[documentGenerator] Erreur génération récépissé:', err.message);
     throw err;
-  } finally {
-    if (browser) {
-      await browser.close().catch(() => {});
-    }
-  }
+  });
 }
 
 /**

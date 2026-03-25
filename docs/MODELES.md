@@ -271,7 +271,7 @@ Tous les modèles du projet avec fichier, table et attributs (type Sequelize). L
 ---
 
 ## DirgaU  
-**Fichier:** `db/dirga_user/model.js` · **Table:** `dirgas`
+**Fichier:** `db/admin/model.js` · **Table:** `dirgas`
 
 | Attribut | Type |
 |----------|------|

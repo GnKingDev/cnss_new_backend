@@ -6,6 +6,38 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT_DIR = path.resolve(__dirname);
+
+/** Résout le chemin vers le binaire Chrome local (chrome/). */
+function resolveChromeExecutable() {
+  const chromeDir = path.join(ROOT_DIR, 'chrome');
+  if (!fs.existsSync(chromeDir)) return null;
+  try {
+    const dirs = fs.readdirSync(chromeDir);
+    const macDir = dirs.find((d) => d.startsWith('mac_arm-') || d.startsWith('mac-'));
+    if (macDir) {
+      const base = path.join(chromeDir, macDir, 'chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing');
+      if (fs.existsSync(base)) return base;
+    }
+    const linuxDir = dirs.find((d) => d.startsWith('linux-'));
+    if (linuxDir) {
+      const linuxPath = path.join(chromeDir, linuxDir, 'chrome-linux64', 'chrome');
+      if (fs.existsSync(linuxPath)) return linuxPath;
+    }
+  } catch (err) {
+    console.warn('[utility3] Chrome local non trouvé:', err.message);
+  }
+  return null;
+}
+
+const CHROME_LAUNCH_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-gpu',
+  '--disable-software-rasterizer',
+  '--no-first-run',
+  '--disable-extensions',
+];
 const IMAGE_PATHS = {
   logo: path.join(ROOT_DIR, 'CNSS.jpg'),
   branding: path.join(ROOT_DIR, 'db/document/branding.png'),
@@ -148,14 +180,20 @@ async function genereListePdf(data, employeur) {
   </body>
 </html>`;
 
-    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
+    const executablePath = resolveChromeExecutable();
+    const launchOpts = { headless: 'new', args: CHROME_LAUNCH_ARGS };
+    if (executablePath) launchOpts.executablePath = executablePath;
+    browser = await puppeteer.launch(launchOpts);
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+    await page.setContent(html, { waitUntil: 'load', timeout: 30000 });
     await page.emulateMediaType('screen');
     const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true, landscape: true });
     return Buffer.from(pdfBuffer);
+  } catch (err) {
+    console.error('[utility3] genereListePdf:', err.message);
+    throw err;
   } finally {
-    if (browser) await browser.close();
+    if (browser) await browser.close().catch(() => {});
   }
 }
 
@@ -226,18 +264,136 @@ async function generelistDeclaration(data, employeur, periode, year) {
   </body>
 </html>`;
 
-    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
+    const executablePath = resolveChromeExecutable();
+    const launchOpts = { headless: 'new', args: CHROME_LAUNCH_ARGS };
+    if (executablePath) launchOpts.executablePath = executablePath;
+    browser = await puppeteer.launch(launchOpts);
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+    await page.setContent(html, { waitUntil: 'load', timeout: 30000 });
     await page.emulateMediaType('screen');
     const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true, landscape: true });
     return Buffer.from(pdfBuffer);
+  } catch (err) {
+    console.error('[utility3] generelistDeclaration:', err.message);
+    throw err;
   } finally {
-    if (browser) await browser.close();
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
+/**
+ * Génère un PDF du relevé de compte employeur (liste des cotisations).
+ * @param {Array} cotisations - [{motif, periode, date, current_effectif, total_cotisation, is_paid, paid_date}]
+ * @param {object} employeur  - { raison_sociale, adresse, no_immatriculation, no_compte }
+ * @param {object} totaux     - { totalDebit, totalCredit, solde }
+ * @returns {Promise<Buffer>}
+ */
+async function genereComptePdf(cotisations, employeur, totaux) {
+  let browser;
+  try {
+    const puppeteer = require('puppeteer');
+    const logo = readImageBase64(IMAGE_PATHS.logo);
+    const simandou = readImageBase64(IMAGE_PATHS.simandou);
+    const fmt = (n) => (n != null && !Number.isNaN(Number(n)) ? Number(n).toLocaleString('en-US') : '0');
+    const fmtDate = (d) => d ? new Date(d).toLocaleDateString('fr-FR') : '-';
+
+    const rows = (cotisations || []).map((c, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${fmtDate(c.date)}</td>
+        <td style="text-align:left">${c.motif ?? ''}</td>
+        <td>${c.periode ?? '-'}</td>
+        <td>${c.current_effectif ?? '-'}</td>
+        <td>${fmt(c.total_cotisation)}</td>
+        <td>${c.is_paid
+          ? `<span style="color:green;font-weight:bold">Payé</span>`
+          : `<span style="color:#cc0000;font-weight:bold">Impayé</span>`}</td>
+        <td>${fmtDate(c.paid_date)}</td>
+      </tr>`).join('');
+
+    const html = `<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Relevé de compte – ${employeur?.raison_sociale ?? ''}</title>
+    <style>
+      ${COMMON_STYLES}
+      /* Annule le overflow-x:auto de COMMON_STYLES qui génère un tiret noir */
+      .liste table { overflow: visible; }
+      .liste table th { background-color: #1a4d3a; color: #fff; }
+      .totaux td { font-weight: bold; }
+      /* Supprime les bordures parasites des tables infos */
+      table.info { border-collapse: collapse; }
+      table.info td { border: none; }
+    </style>
+  </head>
+  <body>
+    ${getHeaderHtml(logo, simandou)}
+    <main style="font-size: 12px">
+      <table class="info" style="margin-top: 15px; width: 60%">
+        <tbody>
+          <tr><td style="padding-bottom:6px; width:160px">RAISON SOCIALE :</td><td><strong>${employeur?.raison_sociale ?? ''}</strong></td></tr>
+          <tr><td style="padding-bottom:6px">ADRESSE :</td><td>${employeur?.adresse ?? ''}</td></tr>
+          <tr><td style="padding-bottom:6px">N° EMPLOYEUR :</td><td>${employeur?.no_immatriculation ?? ''}</td></tr>
+          <tr><td style="padding-bottom:6px">N° COMPTE :</td><td>${employeur?.no_compte ?? ''}</td></tr>
+          <tr><td>DATE D'ÉDITION :</td><td>${new Date().toLocaleDateString('fr-FR')}</td></tr>
+        </tbody>
+      </table>
+      <div style="border-top: 2px solid #333; margin: 6px 0 2px 0;"></div>
+      <div style="border-top: 1px solid #333; margin-bottom: 4px;"></div>
+      <h4 style="text-align:center; color:#1a4d3a; margin: 6px 0">RELEVÉ DE COMPTE EMPLOYEUR</h4>
+      <div class="liste">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:3%">N°</th>
+              <th style="width:8%">Date</th>
+              <th style="width:28%">Libellé</th>
+              <th style="width:8%">Période</th>
+              <th style="width:6%">Effectif</th>
+              <th style="width:14%">Montant (GNF)</th>
+              <th style="width:7%">Statut</th>
+              <th style="width:10%">Date paiement</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+            <tr style="background:#f0f8f4">
+              <td colspan="5" style="text-align:right; padding-right:8px; font-weight:bold; border-top: 2px solid #1a4d3a">TOTAUX :</td>
+              <td style="font-weight:bold; border-top: 2px solid #1a4d3a">${fmt(totaux?.totalDebit)}</td>
+              <td colspan="2" style="border-top: 2px solid #1a4d3a"></td>
+            </tr>
+            <tr style="background:#1a4d3a; color:#fff">
+              <td colspan="5" style="text-align:right; padding-right:8px; font-weight:bold">SOLDE DÛ (GNF) :</td>
+              <td colspan="3" style="font-weight:bold; font-size:14px">${fmt(totaux?.solde)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+    ${getFooterHtml()}
+  </body>
+</html>`;
+
+    const executablePath = resolveChromeExecutable();
+    const launchOpts = { headless: 'new', args: CHROME_LAUNCH_ARGS };
+    if (executablePath) launchOpts.executablePath = executablePath;
+    browser = await puppeteer.launch(launchOpts);
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: 'load', timeout: 30000 });
+    await page.emulateMediaType('screen');
+    const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true, landscape: true });
+    return Buffer.from(pdfBuffer);
+  } catch (err) {
+    console.error('[utility3] genereComptePdf:', err.message);
+    throw err;
+  } finally {
+    if (browser) await browser.close().catch(() => {});
   }
 }
 
 module.exports = {
   genereListePdf,
-  generelistDeclaration
+  generelistDeclaration,
+  genereComptePdf,
 };

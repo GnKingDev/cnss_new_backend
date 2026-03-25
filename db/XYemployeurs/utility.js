@@ -5,7 +5,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const jwt = require('jsonwebtoken');
-const DirgaU = require('../dirga_user/model');
+const DirgaU = require('../admin/model');
 
 // Ensure uploads directory exists
 const uploadsDir = path.join(__dirname, '../../uploads');
@@ -21,8 +21,8 @@ const ALLOWED_FILE_TYPES = {
   'application/pdf': ['.pdf']
 };
 
-// File size limit: 5MB
-const MAX_FILE_SIZE = 5 * 1024 * 1024;
+// File size limit: 15MB (PDFs, scans)
+const MAX_FILE_SIZE = 15 * 1024 * 1024;
 
 // File filter function
 const fileFilter = (req, file, cb) => {

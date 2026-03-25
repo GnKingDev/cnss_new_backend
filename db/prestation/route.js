@@ -28,7 +28,7 @@ const prestationStorage = multer.diskStorage({
 });
 const prestationUpload = multer({
   storage: prestationStorage,
-  limits: { fileSize: 5 * 1024 * 1024, files: 20 }
+  limits: { fileSize: 15 * 1024 * 1024, files: 20 } // 15 MB par fichier
 });
 
 const STATUTS = ['brouillon', 'soumise', 'en_cours', 'demande_complements', 'completee', 'validee', 'rejetee', 'cloturee'];

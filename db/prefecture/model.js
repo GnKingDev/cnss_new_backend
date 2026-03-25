@@ -26,11 +26,11 @@ const Prefecture = sequelize.define('prefecture', {
     }
   }
 }, {
-  tableName: 'prefectures',
+  tableName: 'prefecture',
   timestamps: true
 });
 
 // Relations
-Prefecture.belongsTo(Pays, { foreignKey: 'paysId', as: 'pays' });
+Prefecture.belongsTo(Pays, { foreignKey: 'paysId', as: 'pays' }); 
 
 module.exports = Prefecture;

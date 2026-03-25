@@ -12,7 +12,7 @@ const employeurUtility = require('../XYemployeurs/utility');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 const EMPLOYEUR_KEY = process.env.EMPLOYEUR_KEY || process.env.JWT_SECRET || 'your-secret-key-change-in-production';
-const JWT_EXPIRES_IN = '30m';
+const JWT_EXPIRES_IN = '3h';
 
 // Helper: Remove sensitive data from user object
 const sanitizeUser = (user) => {
@@ -224,8 +224,7 @@ router.post('/verify_otp', utility.otpVerifyToken, async (req, res) => {
       }
     }
 
-    // Si first_login true : token signé avec JWT_SECRET (token limité, pas EmployeurToken)
-    // — sécurité : ce token ne donne pas accès aux routes protégées par EmployeurToken (EMPLOYEUR_KEY)
+    // Flux first_login (changement mot de passe) : token JWT_SECRET, utilisé uniquement pour resete_password_first_login et verify_token sur /first-login.
     if (user.first_login) {
       const tokenFirstLogin = jwt.sign(
         {
@@ -248,7 +247,7 @@ router.post('/verify_otp', utility.otpVerifyToken, async (req, res) => {
 
     await utility.setSession(user.id);
 
-    // Token employeur signé avec EMPLOYEUR_KEY (vérifié par EmployeurToken dans utility.js)
+    // Token employeur (EMPLOYEUR_KEY, 3h) pour le reste de l'app.
     const token = jwt.sign(
       {
         id: user.id,
@@ -418,7 +417,7 @@ router.post('/verify_otp_reset', utility.otpVerifyToken, async (req, res) => {
 // 2. MOT DE PASSE & SÉCURITÉ
 // ============================================
 
-// POST /api/v1/user/resete_password_first_login (employeur)
+// POST /api/v1/user/resete_password_first_login — token first_login (JWT_SECRET, otpVerifyToken), comme avant.
 router.post('/resete_password_first_login', utility.otpVerifyToken, async (req, res) => {
   try {
     const { user_password, new_password } = req.body;
@@ -808,16 +807,12 @@ router.post('/active_user/:id', utility.EmployeurToken, async (req, res) => {
 // 5. DÉCONNEXION & VÉRIFICATION DE SESSION
 // ============================================
 
-// POST /api/v1/user/signOut
-router.post('/signOut', utility.EmployeurToken, async (req, res) => {
+// POST /api/v1/user/signOut — accepte token employeur ou first_login (VerifyTokenFlexible)
+router.post('/signOut', utility.VerifyTokenFlexible, async (req, res) => {
   try {
     const userId = req.user.id;
-
-    const result = await utility.deleteSession(userId);
-    if (result === 0) {
-      return res.status(404).json({ message: 'Session non trouvée' });
-    }
-
+    const isFirstLogin = !!req.user.first_login;
+    if (!isFirstLogin && utility.isRedisConnected()) await utility.deleteSession(userId);
     return res.status(200).json({ message: 'Déconnexion réussie' });
   } catch (error) {
     console.error('Sign out error:', error);
@@ -825,15 +820,20 @@ router.post('/signOut', utility.EmployeurToken, async (req, res) => {
   }
 });
 
-// GET /api/v1/user/verify_token
-// Retourne l'utilisateur complet (DB) pour le top bar : full_name, role, identity, etc.
-router.get('/verify_token', utility.EmployeurToken, async (req, res) => {
+// GET /api/v1/user/verify_token — accepte token employeur ou first_login (pour /first-login et dashboard)
+router.get('/verify_token', utility.VerifyTokenFlexible, async (req, res) => {
   try {
     const user = await Users.findByPk(req.user.id);
     if (!user) {
       return res.status(404).json({ message: 'Utilisateur non trouvé' });
     }
-    return res.status(200).json({ message: 'Token valide', user: sanitizeUser(user) });
+    const sanitized = sanitizeUser(user);
+    const type = user.type || user.role || 'payeur';
+    const role = user.role || user.type || 'payeur';
+    return res.status(200).json({
+      message: 'Token valide',
+      user: { ...sanitized, type, role, userRole: type }
+    });
   } catch (error) {
     return res.status(401).json({ message: 'Token invalide' });
   }

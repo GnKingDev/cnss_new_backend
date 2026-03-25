@@ -83,7 +83,7 @@ Ou utilisez Sequelize CLI pour migrer tous les models.
 
 ### Models Utilitaires
 - `otp` - Codes OTP
-- `dirga_user` - Utilisateurs DIRGA
+- `admin` - Utilisateurs admin (portail BO / DIRGA)
 - `affiliation-volontaire` - Affiliations volontaires
 - `penalites` - Pénalités
 

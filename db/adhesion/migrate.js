@@ -8,5 +8,5 @@ const migrate = async () => {
     console.error('❌ Error migrating Adhesion table:', error);
   }
 };
-
+migrate()
 module.exports = migrate;

@@ -121,7 +121,7 @@ function formatPaginatedResponse(data, totalItems, page, pageSize) {
 }
 
 /** Multer mémoire pour import Excel (import_liste) */
-const uploadImportList = multer({ storage: multer.memoryStorage() });
+const uploadImportList = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } }); // 15 MB
 
 /** Normalise un en-tête Excel pour comparaison (minuscules, espaces uniformes) */
 function normalizeHeader(str) {
@@ -194,7 +194,7 @@ router.post('/declare-periode', EmployeurToken, async (req, res) => {
     const code = generateUniqueCode(9);
 
     try {
-      await getFileAppelCotisation(fileName, Cemployeur, 'FACTURE', EmployeurRecord, code);
+      const pdfResult = await getFileAppelCotisation(fileName, Cemployeur, 'FACTURE', EmployeurRecord, code);
       Cemployeur.facture_path = `/api/v1/docsx/${fileName}.pdf`;
       await Cemployeur.save();
       await document.create({
@@ -205,8 +205,10 @@ router.post('/declare-periode', EmployeurToken, async (req, res) => {
       });
       const insertToOldb = await cotisation_employeur.findByPk(Cemployeur.id, { include: [{ model: Employeur, as: 'employeur' }] });
       addDeclartionDebit(insertToOldb, `${data_cotisation_employeur.year}${monthInfo.code}`);
+      const pdfBase64 = pdfResult.buffer ? pdfResult.buffer.toString('base64') : null;
       return res.status(200).json({
         filePath: `${fileName}.pdf`,
+        pdfBase64: pdfBase64 || undefined,
         is_penalite_applied: Cemployeur.is_penalite_applied,
         penelite_amount: Cemployeur.penelite_amount
       });
@@ -249,7 +251,8 @@ router.post('/facture', EmployeurToken, async (req, res) => {
     const monthInfo = getMonthByName(data.periode);
 
     for (const element of EmployeList) {
-      if (monthInfo && new Date(element.createdAt).getMonth() === monthInfo.id) {
+      const dateEmbauche = element.worked_date || element.createdAt;
+      if (monthInfo && dateEmbauche && new Date(dateEmbauche).getMonth() === monthInfo.id) {
         sendData.effectif_embauche += 1;
       }
       sendData.total_salary += element.salary;
@@ -453,7 +456,8 @@ router.post('/complementaire_facture', EmployeurToken, async (req, res) => {
     const monthInfo = getMonthByName(data.periode);
 
     for (const element of data.bulk || []) {
-      if (monthInfo && new Date(element.createdAt).getMonth() === monthInfo.id) sendData.effectif_embauche += 1;
+      const dateEmbauche = element.worked_date || element.createdAt;
+      if (monthInfo && dateEmbauche && new Date(dateEmbauche).getMonth() === monthInfo.id) sendData.effectif_embauche += 1;
       if (element.type_contrat === 'Stagiaire' || element.type_contrat === 'Apprenti') {
         get_ssc_stagiare_apprentis += element.salary_soumis_cotisation || 0;
       }
@@ -505,7 +509,7 @@ router.post('/complementaire_declaration', EmployeurToken, async (req, res) => {
     const code = generateUniqueCode(9);
 
     try {
-      await getFileAppelCotisation(fileName, Cemployeur, 'FACTURE COMPLEMENTAIRE', EmployeurRecord, code);
+      const pdfResult = await getFileAppelCotisation(fileName, Cemployeur, 'FACTURE COMPLEMENTAIRE', EmployeurRecord, code);
       Cemployeur.facture_path = `/api/v1/docsx/${fileName}.pdf`;
       await Cemployeur.save();
       await document.create({
@@ -516,7 +520,11 @@ router.post('/complementaire_declaration', EmployeurToken, async (req, res) => {
       });
       const insertToOldb = await cotisation_employeur.findByPk(Cemployeur.id, { include: [{ model: Employeur, as: 'employeur' }] });
       addDeclartionDebit(insertToOldb, `${data_cotisation_employeur.year}${monthInfo.code}`);
-      return res.status(200).json({ filePath: `${fileName}.pdf` });
+      const pdfBase64 = pdfResult.buffer ? pdfResult.buffer.toString('base64') : null;
+      return res.status(200).json({
+        filePath: `${fileName}.pdf`,
+        pdfBase64: pdfBase64 || undefined
+      });
     } catch (err) {
       console.error(err);
       return res.status(400).json({ message: 'Facture non générée, veuillez réessayer plus tard' });
@@ -683,7 +691,8 @@ router.post('/import_facture', EmployeurToken, async (req, res) => {
     const employes = data.employes || [];
 
     for (const element of employes) {
-      if (monthInfo && new Date(element.createdAt).getMonth() === monthInfo.id) sendData.effectif_embauche += 1;
+      const dateEmbauche = element.worked_date || element.createdAt;
+      if (monthInfo && dateEmbauche && new Date(dateEmbauche).getMonth() === monthInfo.id) sendData.effectif_embauche += 1;
       if (element.type_contrat === 'Stagiaire' || element.type_contrat === 'Apprenti') {
         get_ssc_stagiare_apprentis += element.salary_soumis_cotisation || 0;
       }

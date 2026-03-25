@@ -9,6 +9,7 @@
     "find-employeur": "node scripts/find-employeur.js",
     "find-employe": "node scripts/find-employe.js",
     "set-first-login": "node scripts/set-first-login.js",
+    "create-admin-employeur": "node scripts/create-admin-employeur.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

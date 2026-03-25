@@ -1,5 +1,9 @@
 const express = require('express');
 const router = express.Router();
+const path = require('path');
+const fs = require('fs');
+const axios = require('axios');
+const multer = require('multer');
 const Paiement = require('./model');
 const Employeur = require('../XYemployeurs/model');
 const Employe = require('../employe/model');
@@ -410,6 +414,7 @@ router.get('/init/:id', EmployeToken, async (req, res) => {
       });
       Paiement.status = 'Nouveau';
       Paiement.employeId = req.user.user_id;
+      Paiement.which_methode = 'Banque';
       await Paiement.save();
       return res.status(200).json({ link });
     }
@@ -422,6 +427,7 @@ router.get('/init/:id', EmployeToken, async (req, res) => {
     Paiement.invoiceId = detail.invoiceId || detail.id;
     Paiement.employeId = req.user.user_id;
     Paiement.status = 'Nouveau';
+    Paiement.which_methode = 'Banque';
     await Paiement.save();
 
     // Generate payment link
@@ -435,8 +441,72 @@ router.get('/init/:id', EmployeToken, async (req, res) => {
 });
 
 /**
+ * GET /api/v1/paiement/payeur/init-by-cotisation/:id
+ *
+ * Initialise un paiement par cotisation (employeur connecté). Même logique que init/:id mais EmployeurToken.
+ * Paramètres: :id = cotisation_employeurId
+ */
+router.get('/payeur/init-by-cotisation/:id', EmployeurToken, async (req, res) => {
+  try {
+    const cotisationId = parseInt(req.params.id);
+    if (isNaN(cotisationId)) {
+      return res.status(400).json({ message: 'ID de cotisation invalide' });
+    }
+    const employeur = await Employeur.findOne({
+      where: { no_immatriculation: req.user.user_identify }
+    });
+    if (!employeur) {
+      return res.status(404).json({ message: 'Employeur non trouvé' });
+    }
+    const employeurId = employeur.id;
+    let paiementRow = await Paiement.findOne({
+      where: { cotisation_employeurId: cotisationId, employeurId },
+      include: [{ association: 'cotisation_employeur' }, { association: 'employeur' }]
+    });
+    if (!paiementRow) {
+      const cotisation = await CotisationEmployeur.findByPk(cotisationId);
+      if (!cotisation) {
+        return res.status(404).json({ message: 'Cotisation non trouvée' });
+      }
+      paiementRow = await Paiement.create({
+        cotisation_employeurId: cotisationId,
+        employeurId,
+        status: 'Nouveau'
+      });
+      await paiementRow.reload({
+        include: [{ association: 'cotisation_employeur' }, { association: 'employeur' }]
+      });
+    }
+    const UUID = utility.geneUID();
+    if (paiementRow.merchantReference && paiementRow.invoiceId) {
+      const link = utility.getPaymentLink({
+        merchantReference: paiementRow.merchantReference,
+        invoiceId: paiementRow.invoiceId
+      });
+      paiementRow.status = 'Nouveau';
+      paiementRow.userId = req.user.id;
+      paiementRow.which_methode = 'Banque';
+      await paiementRow.save();
+      return res.status(200).json({ link });
+    }
+    const detail = await utility.initPaiment(paiementRow, employeur, UUID);
+    paiementRow.merchantReference = detail.merchantReference || UUID;
+    paiementRow.invoiceId = detail.invoiceId || detail.id;
+    paiementRow.userId = req.user.id;
+    paiementRow.status = 'Nouveau';
+    paiementRow.which_methode = 'Banque';
+    await paiementRow.save();
+    const link = utility.getPaymentLink(detail);
+    return res.status(200).json({ link });
+  } catch (error) {
+    console.error('[PAIEMENT] Error init-by-cotisation (payeur):', error);
+    return res.status(400).json({ message: 'Erreur pour initiation du paiement' });
+  }
+});
+
+/**
  * GET /api/v1/paiement/payeur/init/:id
- * 
+ *
  * Initialise un paiement pour une cotisation (initié par un payeur/employeur).
  * Middleware: EmployeurToken
  * Paramètres: :id = paiement ID
@@ -479,6 +549,7 @@ router.get('/payeur/init/:id', EmployeurToken, async (req, res) => {
       });
       Paiement.status = 'Nouveau';
       Paiement.userId = req.user.id;
+      Paiement.which_methode = 'Banque';
       await Paiement.save();
       return res.status(200).json({ link });
     }
@@ -491,6 +562,7 @@ router.get('/payeur/init/:id', EmployeurToken, async (req, res) => {
     Paiement.invoiceId = detail.invoiceId || detail.id;
     Paiement.userId = req.user.id;
     Paiement.status = 'Nouveau';
+    Paiement.which_methode = 'Banque';
     await Paiement.save();
 
     // Generate payment link
@@ -522,6 +594,181 @@ router.get('/init/penalite/paiement/:id', EmployeToken, async (req, res) => {
   } catch (error) {
     console.error('[PAIEMENT] Error initializing penalty payment:', error);
     return res.status(400).json({ message: 'Erreur veuillez reessayer' });
+  }
+});
+
+// ============================================
+// 2b. LENGO PAY – Génération URL de paiement (portal.lengopay.com/api/v1/payments)
+// ============================================
+
+const LENGO_BASE_URL = process.env.LENGO_BASE_URL || 'https://portal.lengopay.com';
+const LENGO_LICENSE_KEY = process.env.LENGO_LICENSE_KEY || '';
+const LENGO_WEBSITE_ID = process.env.LENGO_WEBSITE_ID || '';
+const LENGO_RETURN_URL = (process.env.LENGO_RETURN_URL || '').trim() || null;
+const LENGO_FAILURE_URL = (process.env.LENGO_FAILURE_URL || '').trim() || null;
+const LENGO_CALLBACK_URL = (process.env.LENGO_CALLBACK_URL || '').trim() || null;
+
+/**
+ * POST /api/v1/paiement/lengo_cashin
+ *
+ * Génère une URL de paiement Lengo Pay (POST portal.lengopay.com/api/v1/payments).
+ * Body: { amount, currency?, return_url?, failure_url?, callback_url?, cotisation_employeurId? }
+ * Réponse Lengo: status, pay_id, payment_url. On renvoie { link, pay_id, status } pour ouvrir la page de paiement.
+ * Middleware: EmployeurToken
+ */
+router.post('/lengo_cashin', EmployeurToken, async (req, res) => {
+  try {
+    const { amount, currency = 'GNF', return_url, failure_url, callback_url, cotisation_employeurId } = req.body;
+
+    const amountVal = amount != null ? (typeof amount === 'number' ? amount : parseFloat(String(amount).trim())) : NaN;
+    if (!Number.isFinite(amountVal) || amountVal <= 0) {
+      return res.status(400).json({ message: 'Montant invalide' });
+    }
+
+    if (!LENGO_LICENSE_KEY || !LENGO_WEBSITE_ID) {
+      return res.status(503).json({ message: 'Paiement Lengo Pay non configuré (LENGO_LICENSE_KEY, LENGO_WEBSITE_ID)' });
+    }
+
+    const payload = {
+      websiteid: LENGO_WEBSITE_ID,
+      amount: Math.round(amountVal),
+      currency: (currency || 'GNF').toString()
+    };
+    if (return_url && typeof return_url === 'string' && return_url.startsWith('http')) payload.return_url = return_url.trim();
+    else if (LENGO_RETURN_URL) payload.return_url = LENGO_RETURN_URL;
+    if (failure_url && typeof failure_url === 'string' && failure_url.startsWith('http')) payload.failure_url = failure_url.trim();
+    else if (LENGO_FAILURE_URL) payload.failure_url = LENGO_FAILURE_URL;
+    if (callback_url && typeof callback_url === 'string' && callback_url.startsWith('http')) payload.callback_url = callback_url.trim();
+    else if (LENGO_CALLBACK_URL) payload.callback_url = LENGO_CALLBACK_URL;
+
+    console.log('[PAIEMENT] lengo_cashin request payload:', JSON.stringify(payload, null, 2));
+
+    const authHeader = 'Basic ' + LENGO_LICENSE_KEY.trim();
+    const response = await axios.post(LENGO_BASE_URL + '/api/v1/payments', payload, {
+      headers: {
+        'Authorization': authHeader,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      timeout: 30000
+    });
+
+    const data = response.data || {};
+    console.log('[PAIEMENT] lengo_cashin response:', response.status, JSON.stringify(data, null, 2));
+
+    const paymentUrl = data.payment_url;
+    if (!paymentUrl || typeof paymentUrl !== 'string') {
+      return res.status(502).json({ message: 'Réponse Lengo invalide : payment_url absent' });
+    }
+
+    const cotisationId = cotisation_employeurId != null ? parseInt(cotisation_employeurId, 10) : null;
+    if (Number.isFinite(cotisationId)) {
+      const employeurId = req.user.user_id;
+      let paiement = await Paiement.findOne({ where: { cotisation_employeurId: cotisationId, employeurId } });
+      if (paiement) {
+        paiement.which_methode = 'Mobile Money';
+        await paiement.save();
+      } else {
+        const cotisation = await CotisationEmployeur.findByPk(cotisationId);
+        if (cotisation) {
+          await Paiement.create({ cotisation_employeurId: cotisationId, employeurId, status: 'Nouveau', which_methode: 'Mobile Money' });
+        }
+      }
+    }
+
+    return res.status(200).json({
+      link: paymentUrl,
+      payment_url: paymentUrl,
+      pay_id: data.pay_id,
+      status: data.status,
+      message: data.message || 'URL de paiement générée'
+    });
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response) {
+      const status = err.response.status;
+      const body = err.response.data;
+      const msg = body?.message || body?.error || err.message;
+      console.log('[PAIEMENT] lengo_cashin Lengo error:', status, JSON.stringify(body, null, 2));
+      const httpStatus = status === 401 ? 502 : status === 400 ? 400 : 502;
+      return res.status(httpStatus).json({ message: status === 401 ? 'Passerelle de paiement : clé invalide (Lengo Pay)' : (msg || 'Erreur Lengo Pay') });
+    }
+    console.error('[PAIEMENT] Lengo cashin error:', err);
+    return res.status(500).json({ message: 'Erreur lors de l\'initiation du paiement Lengo Pay' });
+  }
+});
+
+// ============================================
+// 2c. ATD – Justificatifs de virement + référence
+// ============================================
+
+const atdProofUploadDir = path.join(__dirname, '../../uploads/paiement-atd');
+if (!fs.existsSync(atdProofUploadDir)) {
+  fs.mkdirSync(atdProofUploadDir, { recursive: true });
+}
+const atdProofStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, atdProofUploadDir),
+  filename: (_req, file, cb) => {
+    const ext = (path.extname(file.originalname) || '').toLowerCase() || '.pdf';
+    const base = path.basename(file.originalname, path.extname(file.originalname))
+      .replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-]/g, '').substring(0, 40);
+    cb(null, `atd-${Date.now()}-${base}${ext}`);
+  }
+});
+const atdProofUpload = multer({
+  storage: atdProofStorage,
+  limits: { fileSize: 15 * 1024 * 1024, files: 5 }
+});
+
+/**
+ * POST /api/v1/paiement/atd_proof
+ * Enregistre le mode de paiement ATD + référence + justificatifs (multipart).
+ * Body (form): cotisation_employeurId, reference (optionnel). Fichiers: champs "proof" (plusieurs autorisés).
+ * Middleware: EmployeurToken
+ */
+router.post('/atd_proof', EmployeurToken, atdProofUpload.array('proof', 5), async (req, res) => {
+  try {
+    const cotisationEmployeurId = parseInt(req.body.cotisation_employeurId, 10);
+    const reference = (req.body.reference || '').trim() || null;
+    if (!Number.isFinite(cotisationEmployeurId)) {
+      return res.status(400).json({ message: 'cotisation_employeurId invalide' });
+    }
+    const employeurId = req.user.user_id;
+    let paiement = await Paiement.findOne({
+      where: { cotisation_employeurId, employeurId },
+      include: [{ association: 'cotisation_employeur' }, { association: 'employeur' }]
+    });
+    if (!paiement) {
+      const cotisation = await CotisationEmployeur.findByPk(cotisationEmployeurId);
+      if (!cotisation) {
+        return res.status(404).json({ message: 'Cotisation non trouvée' });
+      }
+      paiement = await Paiement.create({
+        cotisation_employeurId,
+        employeurId,
+        status: 'Nouveau',
+        which_methode: 'ATD',
+        payment_reference: reference
+      });
+    } else {
+      paiement.which_methode = 'ATD';
+      paiement.payment_reference = reference;
+    }
+    const files = req.files || [];
+    const paths = files.map((f) => f.path || f.filename);
+    if (paths.length > 0) {
+      const existing = (paiement.atd_proof_paths && JSON.parse(paiement.atd_proof_paths)) || [];
+      paiement.atd_proof_paths = JSON.stringify([...existing, ...paths]);
+    }
+    await paiement.save();
+    return res.status(200).json({
+      message: 'Enregistrement ATD effectué',
+      paiementId: paiement.id,
+      which_methode: paiement.which_methode,
+      payment_reference: paiement.payment_reference
+    });
+  } catch (err) {
+    console.error('[PAIEMENT] atd_proof error:', err);
+    return res.status(500).json({ message: 'Erreur lors de l\'enregistrement des justificatifs ATD' });
   }
 });
 

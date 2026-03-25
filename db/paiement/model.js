@@ -55,6 +55,16 @@ const Paiement = sequelize.define('paiement', {
     type: DataTypes.STRING,
     allowNull: true
   },
+  payment_reference: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    comment: 'Référence / N° transaction (ex. ATD, virement)'
+  },
+  atd_proof_paths: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    comment: 'JSON array des chemins des justificatifs de virement ATD'
+  },
   cotisation_employeurId: {
     type: DataTypes.INTEGER,
     allowNull: true,

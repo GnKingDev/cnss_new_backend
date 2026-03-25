@@ -158,10 +158,12 @@ router.get('/demandes/:id', EmployeurToken, async (req, res) => {
 router.get('/employes', EmployeurToken, async (req, res) => {
   try {
     const employeurId = req.user.user_id;
-    const { recherche, sans_biometrie, page = 1, limit = 50, matricule_debut, matricule_fin } = req.query;
+    const { recherche, sans_biometrie, avec_biometrie, page = 1, limit = 50, matricule_debut, matricule_fin } = req.query;
     const where = { employeurId, is_out: false };
     if (sans_biometrie === 'true' || sans_biometrie === true) {
       where[Op.or] = [{ has_biometric: false }, { has_biometric: null }];
+    } else if (avec_biometrie === 'true' || avec_biometrie === true) {
+      where.has_biometric = true;
     }
     const search = recherche && String(recherche).trim();
     if (search && search.length >= 2) {
@@ -302,6 +304,153 @@ router.get('/agences', EmployeurToken, async (req, res) => {
  */
 router.get('/creneaux', EmployeurToken, (req, res) => {
   return res.status(200).json({ data: CRENEAUX });
+});
+
+// ============================================================
+// BO ROUTES — pas de filtre par employeur_id
+// ============================================================
+
+/**
+ * GET /bo/stats
+ */
+router.get('/bo/stats', async (req, res) => {
+  try {
+    const [total_demandes, en_attente, en_traitement, termines, rejetes] = await Promise.all([
+      BiometrieDemande.count(),
+      BiometrieDemande.count({ where: { statut: { [Op.in]: ['en_attente', 'planifié'] } } }),
+      BiometrieDemande.count({ where: { statut: 'en_traitement' } }),
+      BiometrieDemande.count({ where: { statut: 'terminé' } }),
+      BiometrieDemande.count({ where: { statut: 'rejeté' } }),
+    ]);
+    return res.status(200).json({ success: true, data: { total_demandes, en_attente, en_traitement, termines, rejetes } });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/**
+ * GET /bo/demandes
+ * Query: page, limit, recherche, type, statut
+ */
+router.get('/bo/demandes', async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, parseInt(req.query.limit) || 15);
+    const offset = (page - 1) * limit;
+    const { recherche, type, statut } = req.query;
+
+    const where = {};
+    if (type && type !== 'all') where.type = type;
+    if (statut && statut !== 'all') where.statut = statut;
+
+    if (recherche && String(recherche).trim()) {
+      const search = String(recherche).trim();
+      const empIds = await Employe.findAll({
+        where: {
+          [Op.or]: [
+            { last_name: { [Op.like]: `%${search}%` } },
+            { first_name: { [Op.like]: `%${search}%` } },
+            { matricule: { [Op.like]: `%${search}%` } },
+          ]
+        },
+        attributes: ['id']
+      }).then(r => r.map(e => e.id));
+      where[Op.or] = [
+        { reference: { [Op.like]: `%${search}%` } },
+        ...(empIds.length ? [{ employee_id: { [Op.in]: empIds } }] : []),
+        ...(!isNaN(parseInt(search)) ? [{ id: parseInt(search) }] : []),
+      ];
+    }
+
+    const { count, rows } = await BiometrieDemande.findAndCountAll({
+      where,
+      include: [
+        { model: Employe, as: 'employee', attributes: ['id', 'first_name', 'last_name', 'matricule', 'no_immatriculation'] },
+        { model: Employeur, as: 'employeur', attributes: ['id', 'raison_sociale', 'no_immatriculation'] },
+      ],
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset,
+    });
+
+    const data = rows.map(d => {
+      const dJson = d.toJSON ? d.toJSON() : d;
+      return {
+        ...formatDemande(dJson, dJson.employee),
+        employeur: dJson.employeur || null,
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      data,
+      pagination: { page, limit, total: count, totalPages: Math.ceil(count / limit) },
+    });
+  } catch (err) {
+    console.error('[BIOMETRIE_BO_LIST]', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/**
+ * GET /bo/demandes/:id
+ */
+router.get('/bo/demandes/:id', async (req, res) => {
+  try {
+    const idParam = req.params.id;
+    const isNumeric = !isNaN(parseInt(idParam, 10));
+    const where = isNumeric ? { id: parseInt(idParam, 10) } : { reference: idParam };
+
+    const d = await BiometrieDemande.findOne({
+      where,
+      include: [
+        { model: Employe, as: 'employee', attributes: ['id', 'first_name', 'last_name', 'matricule', 'no_immatriculation', 'date_of_birth'] },
+        { model: Employeur, as: 'employeur', attributes: ['id', 'raison_sociale', 'no_immatriculation', 'email', 'phone_number'] },
+      ],
+    });
+    if (!d) return res.status(404).json({ success: false, message: 'Demande non trouvée' });
+    const dJson = d.toJSON ? d.toJSON() : d;
+    return res.status(200).json({ success: true, data: { ...formatDemande(dJson, dJson.employee), employeur: dJson.employeur } });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/**
+ * PUT /bo/demandes/:id/statut
+ * Body: { statut, date_rdv?, lieu_rdv?, progression? }
+ */
+router.put('/bo/demandes/:id/statut', async (req, res) => {
+  try {
+    const idParam = req.params.id;
+    const isNumeric = !isNaN(parseInt(idParam, 10));
+    const where = isNumeric ? { id: parseInt(idParam, 10) } : { reference: idParam };
+
+    const d = await BiometrieDemande.findOne({ where });
+    if (!d) return res.status(404).json({ success: false, message: 'Demande non trouvée' });
+
+    const { statut, date_rdv, lieu_rdv, progression } = req.body;
+    if (!statut || !STATUTS.includes(statut)) {
+      return res.status(400).json({ success: false, message: 'Statut invalide' });
+    }
+
+    const hist = Array.isArray(d.historique) ? [...d.historique] : [];
+    hist.push({ etape: `Statut → ${statut}`, date: new Date().toISOString() });
+
+    const updates = { statut, historique: hist };
+    if (date_rdv) updates.date_rdv = date_rdv;
+    if (lieu_rdv) updates.lieu_rdv = lieu_rdv;
+    if (progression !== undefined) updates.progression = Math.min(100, Math.max(0, parseInt(progression) || 0));
+    else {
+      const progressMap = { 'en_attente': 0, 'planifié': 25, 'en_traitement': 60, 'terminé': 100, 'rejeté': 0 };
+      updates.progression = progressMap[statut] ?? d.progression;
+    }
+
+    await d.update(updates);
+    return res.status(200).json({ success: true, data: d });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 module.exports = router;

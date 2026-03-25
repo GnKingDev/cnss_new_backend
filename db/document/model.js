@@ -12,6 +12,10 @@ const Document = sequelize.define('document', {
     type: DataTypes.STRING,
     allowNull: true
   },
+  path: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
   code: {
     type: DataTypes.STRING,
     defaultValue: ''
@@ -23,6 +27,16 @@ const Document = sequelize.define('document', {
       model: Employeur,
       key: 'id'
     }
+  },
+  createdAt: {
+    type: DataTypes.DATE,
+    allowNull: false,
+    defaultValue: sequelize.literal('CURRENT_TIMESTAMP')
+  },
+  updatedAt: {
+    type: DataTypes.DATE,
+    allowNull: false,
+    defaultValue: sequelize.literal('CURRENT_TIMESTAMP')
   }
 }, {
   tableName: 'documents',
@@ -32,4 +46,4 @@ const Document = sequelize.define('document', {
 // Relations
 Document.belongsTo(Employeur, { foreignKey: 'employeurId', as: 'employeur' });
 
-module.exports = Document;
+module.exports = Document; 

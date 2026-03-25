@@ -19,6 +19,18 @@ const CACHE_KEY = 'prefectures:all';
 const CACHE_TTL = 86400; // 24 heures
 
 /**
+ * GET / — alias proxy-compatible (Vite supprime /api → /prefectures = GET /)
+ */
+router.get('/', async (req, res) => {
+  try {
+    const prefectures = await Prefecture.findAll({ order: [['name', 'ASC']] });
+    return res.status(200).json({ success: true, data: prefectures });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+/**
  * GET /api/v1/prefecture/get_all_prefecture
  * 
  * Récupère la liste de toutes les préfectures avec filtres et cache.

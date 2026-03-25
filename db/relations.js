@@ -20,12 +20,15 @@ const Otp = require('./otp/model');
 const ExcelFile = require('./excel_file/model');
 const Quitus = require('./quitus/model');
 const Succursale = require('./succursale/model');
-const DirgaU = require('./dirga_user/model');
+const DirgaU = require('./admin/model');
 const AffiliationVolontaire = require('./affiliation-volontaire/model');
+const UserAffiliationVolontaire = require('./user_affiliation_volontaire/model');
+const DeclarationAffiliationVolontaire = require('./declaration_affiliation_volontaire/model');
 const PrestationDemande = require('./prestation/model');
 const PrestationDocument = require('./prestation/documentModel');
 const BiometrieDemande = require('./biometrie/model');
 const ReclamationDemande = require('./reclamation/model');
+const QuitusDemande = require('./quitus_menu/model');
 
 // Initialize hasMany relations
 Pays.hasMany(Prefecture, { foreignKey: 'paysId', as: 'prefectures' });
@@ -35,6 +38,8 @@ Branche.hasMany(AffiliationVolontaire, { foreignKey: 'brancheId', as: 'affiliati
 Prefecture.hasMany(Employeur, { foreignKey: 'prefectureId', as: 'employeurs' });
 Prefecture.hasMany(Employe, { foreignKey: 'prefectureId', as: 'employes' });
 Prefecture.hasMany(AffiliationVolontaire, { foreignKey: 'prefectureId', as: 'affiliations_volontaires' });
+AffiliationVolontaire.hasOne(UserAffiliationVolontaire, { foreignKey: 'affiliationVolontaireId', as: 'user' });
+AffiliationVolontaire.hasMany(DeclarationAffiliationVolontaire, { foreignKey: 'affiliationVolontaireId', as: 'declarations' });
 Users.hasMany(Otp, { foreignKey: 'userId', as: 'otps' });
 Users.hasMany(CotisationEmployeur, { foreignKey: 'userId', as: 'cotisations' });
 Users.hasMany(Paiement, { foreignKey: 'userId', as: 'paiements' });
@@ -61,6 +66,7 @@ Conjoint.hasMany(Enfant, { foreignKey: 'conjointId', as: 'enfants' });
 PrestationDemande.hasMany(PrestationDocument, { foreignKey: 'prestation_demande_id', as: 'documents' });
 Employeur.hasMany(BiometrieDemande, { foreignKey: 'employeur_id', as: 'biometrie_demandes' });
 Employeur.hasMany(ReclamationDemande, { foreignKey: 'employeur_id', as: 'reclamation_demandes' });
+Employeur.hasMany(QuitusDemande, { foreignKey: 'employeur_id', as: 'quitus_demandes' });
 
 console.log('✅ All model relations initialized');
 

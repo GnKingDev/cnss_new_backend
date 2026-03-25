@@ -2,7 +2,7 @@ const { DataTypes } = require('sequelize');
 const sequelize = require('../db.connection');
 const Employeur = require('../XYemployeurs/model');
 const Users = require('../users/model');
-const DirgaU = require('../dirga_user/model');
+const DirgaU = require('../admin/model');
 
 const Demande = sequelize.define('demande', {
   id: {

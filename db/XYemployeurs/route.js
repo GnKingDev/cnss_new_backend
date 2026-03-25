@@ -12,9 +12,26 @@ const Users = require('../users/model');
 const Prefecture = require('../prefecture/model');
 const Branche = require('../branches/model');
 const CotisationEmployeur = require('../cotisation_employeur/model');
+const Demploye = require('../declaration-employe/model');
 const Paiement = require('../paiement/model');
 const utility = require('./utility');
 const userUtility = require('../users/utility');
+
+let generelistDeclaration, genereComptePdf, exportDeclaration;
+try {
+  const util3 = require('../../utility3');
+  generelistDeclaration = util3.generelistDeclaration;
+  genereComptePdf = util3.genereComptePdf;
+} catch (e) {
+  generelistDeclaration = () => Promise.reject(new Error('generelistDeclaration non disponible'));
+  genereComptePdf = () => Promise.reject(new Error('genereComptePdf non disponible'));
+}
+try {
+  const util2 = require('../../utility2');
+  exportDeclaration = util2.exportDeclaration;
+} catch (e) {
+  exportDeclaration = () => Promise.reject(new Error('exportDeclaration non disponible'));
+}
 
 let addJob;
 try {
@@ -866,33 +883,51 @@ router.post('/delete_employeur/:id', utility.verifyToken, asyncHandler(async (re
 // GET all employeurs (basic route with pagination)
 router.get('/', asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaginationParams(req);
-  const { search, is_immatriculed } = req.query;
+  const { search, is_immatriculed, is_active, category, sortBy, sortOrder, status } = req.query;
 
   const whereClause = {};
   if (search) {
     whereClause[Op.or] = [
       { raison_sociale: { [Op.like]: `%${search}%` } },
       { email: { [Op.like]: `%${search}%` } },
-      { no_immatriculation: { [Op.like]: `%${search}%` } }
+      { no_immatriculation: { [Op.like]: `%${search}%` } },
+      { sigle: { [Op.like]: `%${search}%` } },
     ];
   }
-  if (is_immatriculed !== undefined) {
-    whereClause.is_immatriculed = is_immatriculed === 'true';
-  }
+  // Support both ?status=traite|non_traite and ?is_immatriculed=true|false
+  if (status === 'traite')     whereClause.is_immatriculed = true;
+  else if (status === 'non_traite') whereClause.is_immatriculed = false;
+  else if (is_immatriculed !== undefined) whereClause.is_immatriculed = is_immatriculed === 'true';
+  if (is_active !== undefined) whereClause.is_active = is_active === 'true';
+  if (category) whereClause.category = category;
+
+  const validSortFields = ['raison_sociale', 'effectif_total', 'solde', 'createdAt', 'no_immatriculation'];
+  const orderField = validSortFields.includes(sortBy) ? sortBy : 'createdAt';
+  const orderDir = sortOrder === 'asc' ? 'ASC' : 'DESC';
 
   const result = await Employeur.findAndCountAll({
     where: whereClause,
     include: [
-      { association: 'request_employeur' },
       { association: 'prefecture' },
-      { association: 'branche' }
+      { association: 'branche' },
     ],
     limit,
     offset,
-    order: [['createdAt', 'DESC']]
+    order: [[orderField, orderDir]],
   });
 
-  return res.status(200).json(formatPaginatedResponse(result.rows, result.count, page, limit));
+  return res.status(200).json({
+    success: true,
+    data: {
+      employeurs: result.rows,
+      pagination: {
+        total: result.count,
+        page,
+        limit,
+        totalPages: Math.ceil(result.count / limit),
+      },
+    },
+  });
 }));
 
 // ============================================
@@ -922,6 +957,10 @@ router.get('/profile', userUtility.EmployeurToken, asyncHandler(async (req, res)
     no_immatriculation: employeur.no_immatriculation || '',
     cnss_number: employeur.no_immatriculation || '',
     nif: employeur.no_rccm || employeur.no_dni || '',
+    no_rccm: employeur.no_rccm || null,
+    rccm_file: employeur.rccm_file || null,
+    no_dni: employeur.no_dni || null,
+    dni_file: employeur.dni_file || null,
     adresse: employeur.adresse || '',
     address: employeur.adresse || '',
     phone_number: employeur.phone_number || '',
@@ -1024,6 +1063,46 @@ router.patch('/profile', userUtility.EmployeurToken, asyncHandler(async (req, re
     is_active: employeur.is_active !== undefined ? employeur.is_active : null,
     createdAt: employeur.createdAt || null,
     updatedAt: employeur.updatedAt || null
+  });
+}));
+
+/**
+ * PATCH /api/v1/employeur/profile/documents
+ * Ajout / mise à jour des documents NIF et RCCM (fichiers + numéros).
+ * Body: multipart/form-data avec rccm_file?, dni_file?, no_rccm?, no_dni?
+ */
+const documentsUpload = utility.upload.fields([
+  { name: 'rccm_file', maxCount: 1 },
+  { name: 'dni_file', maxCount: 1 }
+]);
+router.patch('/profile/documents', userUtility.EmployeurToken, documentsUpload, asyncHandler(async (req, res) => {
+  const employeur = await Employeur.findByPk(req.user.user_id);
+  if (!employeur) {
+    return res.status(404).json({ message: 'Employeur non trouvé' });
+  }
+  const updateData = {};
+  if (req.body.no_rccm !== undefined) updateData.no_rccm = req.body.no_rccm || null;
+  if (req.body.no_dni !== undefined) updateData.no_dni = req.body.no_dni || null;
+  const files = req.files || {};
+  if (files.rccm_file && files.rccm_file[0]) {
+    updateData.rccm_file = `/uploads/${files.rccm_file[0].filename}`;
+  }
+  if (files.dni_file && files.dni_file[0]) {
+    updateData.dni_file = `/uploads/${files.dni_file[0].filename}`;
+  }
+  if (Object.keys(updateData).length === 0) {
+    return res.status(400).json({ message: 'Aucune donnée à mettre à jour (joignez des fichiers et/ou no_rccm, no_dni)' });
+  }
+  await employeur.update(updateData);
+  return res.status(200).json({
+    id: employeur.id,
+    raison_sociale: employeur.raison_sociale || null,
+    no_immatriculation: employeur.no_immatriculation || null,
+    no_rccm: employeur.no_rccm || null,
+    rccm_file: employeur.rccm_file || null,
+    no_dni: employeur.no_dni || null,
+    dni_file: employeur.dni_file || null,
+    message: 'Documents mis à jour'
   });
 }));
 
@@ -1328,6 +1407,9 @@ router.get('/dashboard/home', userUtility.EmployeurToken, asyncHandler(async (re
   const paymentsThisMonth = await Paiement.count({
     where: { employeurId, is_paid: true, paid_date: { [Op.gte]: startOfMonth } }
   });
+  const totalPayments = await Paiement.count({
+    where: { employeurId, is_paid: true }
+  });
 
   const declarationsTrend = totalDeclarations - declarationsPrevMonth;
   const paymentsTrend = paymentsThisMonth - paymentsPrevMonth;
@@ -1432,6 +1514,7 @@ router.get('/dashboard/home', userUtility.EmployeurToken, asyncHandler(async (re
       monthLabel,
       declarationsCount: totalDeclarations,
       paymentsCount: paymentsThisMonth,
+      paymentsTotal: totalPayments,
       requestsPending,
       declarationsTrend: declarationsTrend >= 0 ? `+${declarationsTrend}` : `${declarationsTrend}`,
       paymentsTrend: paymentsTrend >= 0 ? `+${paymentsTrend}` : `${paymentsTrend}`,
@@ -1569,13 +1652,386 @@ router.get('/dashboard/recent-activities', userUtility.EmployeurToken, asyncHand
   return res.status(200).json({ activities, unreadCount: activities.filter(a => a.time.includes('min')).length });
 }));
 
-// GET employeur by id
+// GET /stats — Statistiques globales des employeurs (portail BO)
+router.get('/stats', asyncHandler(async (req, res) => {
+  const [
+    total,
+    traite,
+    actifs,
+    inactifs,
+    totalEffectifRaw,
+    totalSoldeRaw,
+  ] = await Promise.all([
+    Employeur.count(),
+    Employeur.count({ where: { is_immatriculed: true } }),
+    Employeur.count({ where: { is_active: true } }),
+    Employeur.count({ where: { is_active: false } }),
+    Employeur.sum('effectif_total'),
+    Employeur.sum('solde'),
+  ]);
+
+  return res.status(200).json({
+    success: true,
+    data: {
+      total,
+      traite,
+      non_traite: total - traite,
+      actifs,
+      inactifs,
+      totalEffectif: totalEffectifRaw || 0,
+      totalSolde: totalSoldeRaw || 0,
+      byCategory: [],
+      byPrefecture: [],
+      byFormeJuridique: [],
+    },
+  });
+}));
+
+// ============================================
+// ROUTES BO CNSS (REST)
+// POST /:id/validate  — immatriculer l'employeur
+// POST /:id/reject    — rejeter l'affiliation
+// PUT  /:id/toggle-active — activer/désactiver
+// ============================================
+
+router.post('/:id/validate', utility.verifyToken, asyncHandler(async (req, res) => {
+  const employeurId = parseInt(req.params.id);
+  if (isNaN(employeurId)) return res.status(400).json({ success: false, error: 'ID invalide' });
+
+  const employeur = await Employeur.findByPk(employeurId, {
+    include: [{ association: 'prefecture' }, { association: 'branche' }],
+  });
+  if (!employeur) return res.status(404).json({ success: false, error: 'Employeur non trouvé' });
+  if (employeur.is_immatriculed) return res.status(400).json({ success: false, error: 'Cet employeur est déjà immatriculé' });
+
+  await employeur.update({
+    is_immatriculed: true,
+    who_valide: req.user.id,
+    date_immatriculation: new Date(),
+  });
+
+  await addJob({ type: 'employeur', employeurId, user_valid: req.user.id });
+
+  const updated = await Employeur.findByPk(employeurId, {
+    include: [{ association: 'prefecture' }, { association: 'branche' }],
+  });
+  return res.status(200).json({ success: true, data: updated, message: 'Employeur immatriculé avec succès' });
+}));
+
+router.post('/:id/reject', utility.verifyToken, asyncHandler(async (req, res) => {
+  const employeurId = parseInt(req.params.id);
+  if (isNaN(employeurId)) return res.status(400).json({ success: false, error: 'ID invalide' });
+
+  const employeur = await Employeur.findByPk(employeurId);
+  if (!employeur) return res.status(404).json({ success: false, error: 'Employeur non trouvé' });
+
+  const { reason, details } = req.body;
+  if (!reason) return res.status(400).json({ success: false, error: 'Motif de rejet requis' });
+
+  // Marque comme non immatriculé + désactive
+  await employeur.update({ is_immatriculed: false, is_active: false });
+
+  return res.status(200).json({ success: true, message: 'Affiliation rejetée', reason, details });
+}));
+
+router.put('/:id/toggle-active', utility.verifyToken, asyncHandler(async (req, res) => {
+  const employeurId = parseInt(req.params.id);
+  if (isNaN(employeurId)) return res.status(400).json({ success: false, error: 'ID invalide' });
+
+  const employeur = await Employeur.findByPk(employeurId);
+  if (!employeur) return res.status(404).json({ success: false, error: 'Employeur non trouvé' });
+
+  const { is_active } = req.body;
+  await employeur.update({ is_active: Boolean(is_active) });
+
+  return res.status(200).json({ success: true, data: { ...employeur.toJSON(), is_active: Boolean(is_active) } });
+}));
+
+// POST / — créer un employeur directement depuis le BO (multipart)
+router.post(
+  '/',
+  utility.upload.fields([
+    { name: 'logo', maxCount: 1 },
+    { name: 'rccm_file', maxCount: 1 },
+    { name: 'dni_file', maxCount: 1 },
+    { name: 'DPAE_file', maxCount: 1 },
+  ]),
+  asyncHandler(async (req, res) => {
+    const { raison_sociale } = req.body;
+    if (!raison_sociale || !String(raison_sociale).trim()) {
+      return res.status(400).json({ success: false, error: 'La raison sociale est obligatoire' });
+    }
+
+    const files = req.files || {};
+    const fileFields = {};
+    if (files.logo?.[0])      fileFields.logo      = `/uploads/${files.logo[0].filename}`;
+    if (files.rccm_file?.[0]) fileFields.rccm_file = `/uploads/${files.rccm_file[0].filename}`;
+    if (files.dni_file?.[0])  fileFields.dni_file  = `/uploads/${files.dni_file[0].filename}`;
+    if (files.DPAE_file?.[0]) fileFields.DPAE_file = `/uploads/${files.DPAE_file[0].filename}`;
+
+    const employeur = await Employeur.create({
+      ...req.body,
+      ...fileFields,
+      is_immatriculed: false,
+      is_active: true,
+      role: 'employeur',
+    });
+
+    const result = await Employeur.findByPk(employeur.id, {
+      include: [{ association: 'prefecture' }, { association: 'branche' }],
+    });
+
+    return res.status(201).json({ success: true, data: result });
+  })
+);
+
+// GET export PDF du relevé de compte employeur
+router.get('/:id/compte/pdf', asyncHandler(async (req, res) => {
+  const employeurId = parseInt(req.params.id);
+  if (isNaN(employeurId)) return res.status(400).json({ error: 'ID invalide' });
+
+  const year = req.query.year ? parseInt(req.query.year) : null;
+  const where = { employeurId };
+  if (year) where.year = year;
+
+  const [employeur, cotisations] = await Promise.all([
+    Employeur.findByPk(employeurId, {
+      attributes: ['raison_sociale', 'no_immatriculation', 'no_compte', 'adresse'],
+    }),
+    CotisationEmployeur.findAll({
+      where,
+      order: [['createdAt', 'DESC']],
+      attributes: ['id', 'motif', 'periode', 'year', 'createdAt', 'current_effectif', 'total_cotisation', 'is_paid', 'paid_date'],
+    }),
+  ]);
+
+  if (!employeur) return res.status(404).json({ error: 'Employeur non trouvé' });
+
+  const sumTotal = cotisations.reduce((s, c) => s + (Number(c.total_cotisation) || 0), 0);
+  const sumPaid  = cotisations.filter(c => c.is_paid).reduce((s, c) => s + (Number(c.total_cotisation) || 0), 0);
+
+  const data = cotisations.map(c => ({
+    motif: c.motif,
+    periode: c.periode,
+    date: c.createdAt,
+    current_effectif: c.current_effectif,
+    total_cotisation: Number(c.total_cotisation) || 0,
+    is_paid: c.is_paid,
+    paid_date: c.paid_date,
+  }));
+
+  const buffer = await genereComptePdf(data, employeur.toJSON(), {
+    totalDebit: sumTotal,
+    totalCredit: sumPaid,
+    solde: sumTotal - sumPaid,
+  });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="compte_${employeurId}.pdf"`);
+  res.send(buffer);
+}));
+
+// GET employés déclarés pour une cotisation donnée
+router.get('/:id/compte/:cotisationId/employes', asyncHandler(async (req, res) => {
+  const employeurId   = parseInt(req.params.id);
+  const cotisationId  = parseInt(req.params.cotisationId);
+
+  if (isNaN(employeurId) || isNaN(cotisationId)) {
+    return res.status(400).json({ success: false, error: 'ID invalide' });
+  }
+
+  const declarations = await Demploye.findAll({
+    where: { cotisation_employeurId: cotisationId, employeurId },
+    include: [{
+      model: Employe,
+      as: 'employe',
+      attributes: ['id', 'first_name', 'last_name', 'matricule', 'gender', 'phone_number', 'email'],
+    }],
+    order: [['id', 'ASC']],
+  });
+
+  const employes = declarations.map(d => ({
+    id: d.employe?.id,
+    nom: `${d.employe?.first_name || ''} ${d.employe?.last_name || ''}`.trim(),
+    matricule: d.employe?.matricule || '-',
+    gender: d.employe?.gender || '-',
+    phone_number: d.employe?.phone_number || '-',
+    email: d.employe?.email || '-',
+    salary_brut: Number(d.salary_brut) || 0,
+    salary_soumis_cotisation: Number(d.salary_soumis_cotisation) || 0,
+    cotisation_employe: Number(d.cotisation_employe) || 0,
+    cotisation_emplyeur: Number(d.cotisation_emplyeur) || 0,
+    total_cotisation: Number(d.total_cotisation) || 0,
+  }));
+
+  return res.status(200).json({ success: true, data: { employes, total: employes.length } });
+}));
+
+// GET export PDF des employés d'une cotisation
+router.get('/:id/compte/:cotisationId/employes/pdf', asyncHandler(async (req, res) => {
+  const employeurId  = parseInt(req.params.id);
+  const cotisationId = parseInt(req.params.cotisationId);
+  if (isNaN(employeurId) || isNaN(cotisationId)) return res.status(400).json({ error: 'ID invalide' });
+
+  const [employeur, declarations] = await Promise.all([
+    Employeur.findByPk(employeurId, { attributes: ['raison_sociale', 'no_immatriculation', 'adresse'] }),
+    Demploye.findAll({
+      where: { cotisation_employeurId: cotisationId, employeurId },
+      include: [{ model: Employe, as: 'employe', attributes: ['first_name', 'last_name', 'matricule', 'no_immatriculation'] }],
+    }),
+  ]);
+
+  const cotisation = await CotisationEmployeur.findByPk(cotisationId, { attributes: ['periode', 'year'] });
+
+  const data = declarations.map(d => ({
+    no_immatriculation: d.employe?.no_immatriculation ?? d.employe?.matricule ?? '',
+    first_name: d.employe?.first_name ?? '',
+    last_name: d.employe?.last_name ?? '',
+    salary_brut: Number(d.salary_brut) || 0,
+    ssc: Number(d.salary_soumis_cotisation) || 0,
+    cotisation_employe: Number(d.cotisation_employe) || 0,
+    cotisation_emplyeur: Number(d.cotisation_emplyeur) || 0,
+  }));
+
+  const buffer = await generelistDeclaration(data, employeur, cotisation?.periode, cotisation?.year);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="declaration_${cotisationId}.pdf"`);
+  res.send(buffer);
+}));
+
+// GET export Excel des employés d'une cotisation
+router.get('/:id/compte/:cotisationId/employes/excel', asyncHandler(async (req, res) => {
+  const employeurId  = parseInt(req.params.id);
+  const cotisationId = parseInt(req.params.cotisationId);
+  if (isNaN(employeurId) || isNaN(cotisationId)) return res.status(400).json({ error: 'ID invalide' });
+
+  const [declarations, cotisation] = await Promise.all([
+    Demploye.findAll({
+      where: { cotisation_employeurId: cotisationId, employeurId },
+      include: [{ model: Employe, as: 'employe', attributes: ['first_name', 'last_name', 'matricule', 'no_immatriculation'] }],
+    }),
+    CotisationEmployeur.findByPk(cotisationId, { attributes: ['periode', 'year'] }),
+  ]);
+
+  const data = declarations.map(d => ({
+    matricule: d.employe?.matricule ?? '',
+    no_immatriculation: d.employe?.no_immatriculation ?? '',
+    first_name: d.employe?.first_name ?? '',
+    last_name: d.employe?.last_name ?? '',
+    salary_brut: Number(d.salary_brut) || 0,
+    ssc: Number(d.salary_soumis_cotisation) || 0,
+    cotisation_emplyeur: Number(d.cotisation_emplyeur) || 0,
+    cotisation_employe: Number(d.cotisation_employe) || 0,
+  }));
+
+  const buffer = await exportDeclaration(data, cotisation?.periode ?? '', cotisation?.year ?? '');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="declaration_${cotisationId}.xlsx"`);
+  res.send(buffer);
+}));
+
+// GET compte employeur — cotisations (payées et non payées), paginées
+router.get('/:id/compte', asyncHandler(async (req, res) => {
+  const employeurId = parseInt(req.params.id);
+  if (isNaN(employeurId)) return res.status(400).json({ success: false, error: 'ID invalide' });
+
+  const page  = Math.max(1, parseInt(req.query.page)  || 1);
+  const limit = Math.min(100, parseInt(req.query.limit) || 15);
+  const offset = (page - 1) * limit;
+  const year  = req.query.year ? parseInt(req.query.year) : null;
+
+  const employeur = await Employeur.findByPk(employeurId, {
+    attributes: ['id', 'raison_sociale', 'no_immatriculation', 'no_compte', 'category', 'adresse', 'email', 'phone_number', 'solde', 'effectif_total'],
+  });
+  if (!employeur) return res.status(404).json({ success: false, error: 'Employeur non trouvé' });
+
+  const where = { employeurId };
+  if (year) where.year = year;
+
+  const { count, rows: cotisations } = await CotisationEmployeur.findAndCountAll({
+    where,
+    order: [['createdAt', 'DESC']],
+    limit,
+    offset,
+  });
+
+  // Transformer chaque cotisation en ligne de compte (débit = facture, crédit = paiement)
+  const transactions = cotisations.map(c => ({
+    id: c.id,
+    type: 'facturation',
+    libelle: c.motif || `Cotisation ${c.periode || c.year || ''}`,
+    periode: c.periode || (c.year ? String(c.year) : null),
+    date: c.createdAt,
+    debit: Number(c.total_cotisation) || 0,
+    credit: c.is_paid ? Number(c.total_cotisation) || 0 : 0,
+    is_paid: c.is_paid,
+    paid_date: c.paid_date,
+    quittance: c.quittance,
+    total_salary: c.total_salary,
+    total_cotisation_employe: c.total_cotisation_employe,
+    total_cotisation_employeur: c.total_cotisation_employeur,
+    total_cotisation: c.total_cotisation,
+    prestation_familiale: c.prestation_familiale,
+    risque_professionnel: c.risque_professionnel,
+    assurance_maladie: c.assurance_maladie,
+    vieillesse: c.vieillesse,
+    penelite_amount: c.penelite_amount,
+    is_penalite_applied: c.is_penalite_applied,
+    current_effectif: c.current_effectif,
+  }));
+
+  // Totaux globaux (toutes pages confondues)
+  const [sumTotal, sumPaid, countPaid, countUnpaid, nbEmployes] = await Promise.all([
+    CotisationEmployeur.sum('total_cotisation', { where }),
+    CotisationEmployeur.sum('total_cotisation', { where: { ...where, is_paid: true } }),
+    CotisationEmployeur.count({ where: { ...where, is_paid: true } }),
+    CotisationEmployeur.count({ where: { ...where, is_paid: false } }),
+    Employe.count({ where: { employeurId } }),
+  ]);
+
+  const totalDebit  = Number(sumTotal)  || 0;
+  const totalCredit = Number(sumPaid)   || 0;
+  const soldeCalcule = totalDebit - totalCredit;
+
+  const emp = employeur.toJSON();
+
+  return res.status(200).json({
+    success: true,
+    data: {
+      employeur: {
+        ...emp,
+        solde:          soldeCalcule,
+        effectif_total: nbEmployes,
+      },
+      transactions,
+      totaux: {
+        totalDebit,
+        totalCredit,
+        solde: soldeCalcule,
+      },
+      stats: {
+        nbTransactions: count,
+        nbFacturations: count,
+        nbPaiements: countPaid,
+        cotisationsEnAttente: countUnpaid,
+        totalPenalites: 0,
+      },
+      pagination: {
+        page,
+        limit,
+        total: count,
+        totalPages: Math.ceil(count / limit),
+      },
+    },
+  });
+}));
+
 router.get('/:id', asyncHandler(async (req, res) => {
   const { id } = req.params;
   const employeurId = parseInt(id);
 
   if (isNaN(employeurId)) {
-    return res.status(400).json({ error: 'ID invalide' });
+    return res.status(400).json({ success: false, error: 'ID invalide' });
   }
 
   const employeur = await Employeur.findByPk(employeurId, {
@@ -1583,18 +2039,14 @@ router.get('/:id', asyncHandler(async (req, res) => {
       { association: 'request_employeur' },
       { association: 'prefecture' },
       { association: 'branche' },
-      { 
-        association: 'employes',
-        limit: 10 // Limit employees to avoid huge response
-      }
     ]
   });
 
   if (!employeur) {
-    return res.status(404).json({ error: 'Employeur not found' });
+    return res.status(404).json({ success: false, error: 'Employeur non trouvé' });
   }
 
-  return res.status(200).json(employeur);
+  return res.status(200).json({ success: true, data: employeur });
 }));
 
 // PUT update employeur

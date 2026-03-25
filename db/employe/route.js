@@ -13,6 +13,8 @@ const Demande = require('../demandes/model');
 const Document = require('../document/model');
 const ExcelFile = require('../excel_file/model');
 const { generateCarteAssurePdfBuffer } = require('./carteAssurePdf');
+const { generateFicheEmployePdfBuffer } = require('./ficheEmployePdf');
+const { generateCotisationsPdfBuffer } = require('./cotisationsPdf');
 const utility = require('./utility');
 const { EmployeurToken, EmployeToken, hashPassword, generateUniqueCode } = require('../users/utility');
 const { verifyToken, valideEmailFunction, ValidatePhoneNumber, upload, DeleteDelegateUser } = require('../XYemployeurs/utility');
@@ -63,7 +65,11 @@ try {
  * Base path: /api/v1/employe
  */
 
-// Old DB API URL
+/**
+ * URL du serveur externe (ancienne base CNSS).
+ * Permet de fouiller / récupérer un employé déjà immatriculé côté legacy.
+ * Variable d'environnement : OLD_DB_API_URL (ex: http://192.168.56.128).
+ */
 const util_link = process.env.OLD_DB_API_URL || 'http://192.168.56.128';
 
 // Multer configuration for file uploads
@@ -90,7 +96,7 @@ const storage = multer.diskStorage({
 const employeUpload = multer({ 
   storage,
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5 MB max
+    fileSize: 15 * 1024 * 1024, // 15 MB max par fichier
     files: 10
   }
 });
@@ -99,7 +105,7 @@ const employeUpload = multer({
 const familleUpload = multer({
   storage,
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5 MB par fichier
+    fileSize: 15 * 1024 * 1024, // 15 MB par fichier
     files: 30
   }
 });
@@ -188,9 +194,6 @@ router.post('/save_employe', EmployeurToken, employeUpload.fields(employeFileFie
     if (!files['cni'] || !files['cni'][0]) {
       return res.status(400).json({ message: 'Fichier CNI requis' });
     }
-    if (!files['contrat_file'] || !files['contrat_file'][0]) {
-      return res.status(400).json({ message: 'Fichier contrat requis' });
-    }
     if (!files['avatar'] || !files['avatar'][0]) {
       return res.status(400).json({ message: 'Photo de profil requise' });
     }
@@ -202,11 +205,17 @@ router.post('/save_employe', EmployeurToken, employeUpload.fields(employeFileFie
     data.employeurId = req.user.user_id;
     data.prefectureId = data.prefecture;
 
-    // Ajoute les chemins des fichiers
-    data.avatar = files['avatar'][0].path;
-    data.cni_file = files['cni'][0].path;
-    data.contrat_file = files['contrat_file'][0].path;
+    // Ajoute les chemins des fichiers (relatifs uniquement: uploads/filename)
+    data.avatar = 'uploads/' + path.basename(files['avatar'][0].path);
+    data.cni_file = 'uploads/' + path.basename(files['cni'][0].path);
+    data.contrat_file = (files['contrat_file'] && files['contrat_file'][0])
+      ? 'uploads/' + path.basename(files['contrat_file'][0].path)
+      : null;
     data.date_first_embauche = data.worked_date;
+
+    // Nouveaux employés sans numéro d'immatriculation → statut "En cours de validation"
+    data.no_immatriculation = null;
+    data.is_imma = false;
 
     // Crée l'employé
     const employe = await Employe.create(data);
@@ -222,14 +231,16 @@ router.post('/save_employe', EmployeurToken, employeUpload.fields(employeFileFie
     return res.status(200).json(employe);
   } catch (error) {
     console.error('[EMPLOYE_SAVE] Error:', error);
-    
-    // Traduit les erreurs SQL
-    if (error.name === 'SequelizeUniqueConstraintError' || error.name === 'SequelizeValidationError') {
-      const errorMessage = utility.translateSqlError(error.message);
-      return res.status(400).json({ message: errorMessage });
+    // S'assurer que le message d'erreur atteint l'utilisateur (doublon téléphone, etc.)
+    let message = utility.formatSequelizeError(error);
+    if (error.fields && typeof error.fields === 'object' && Object.keys(error.fields).length > 0) {
+      const field = Object.keys(error.fields)[0];
+      const value = error.fields[field];
+      const labels = { phone_number: 'Ce numéro de téléphone', email: "Cet email", no_immatriculation: "Ce numéro d'immatriculation" };
+      const label = labels[field] || 'Cette valeur';
+      message = `${label} existe déjà${value ? ` (${value})` : ''}. Veuillez utiliser une autre valeur.`;
     }
-
-    return res.status(400).json({ message: 'Erreur lors de la création de l\'employé' });
+    return res.status(400).json({ message });
   }
 });
 
@@ -364,35 +375,138 @@ router.post('/validate/:id', verifyToken, async (req, res) => {
 // ============================================
 
 /**
+ * GET /api/v1/employe  (root list – admin back-office)
+ *
+ * Liste paginée des employés d'un employeur pour le back-office admin.
+ * Middleware: verifyToken
+ * Query: employeurId (requis), search, sexe, type_contrat, is_active, is_imma, is_out, page, limit
+ */
+router.get('/', verifyToken, async (req, res) => {
+  try {
+    const employeurId = parseInt(req.query.employeurId);
+    if (!employeurId || isNaN(employeurId)) {
+      return res.status(400).json({ success: false, message: 'employeurId requis' });
+    }
+
+    const { page, limit, offset } = getPaginationParams(req);
+    const where = { employeurId };
+
+    // gender (M/F) mappé depuis le champ "gender" du modèle
+    if (req.query.sexe) where.gender = req.query.sexe;
+    if (req.query.type_contrat) where.type_contrat = req.query.type_contrat;
+    if (req.query.is_active !== undefined) where.is_out = req.query.is_active === 'true' ? false : true;
+    if (req.query.is_imma !== undefined) where.is_imma = req.query.is_imma === 'true';
+    if (req.query.is_out !== undefined) where.is_out = req.query.is_out === 'true';
+
+    if (req.query.search) {
+      const s = `%${req.query.search}%`;
+      where[Op.or] = [
+        { first_name: { [Op.like]: s } },
+        { last_name: { [Op.like]: s } },
+        { matricule: { [Op.like]: s } },
+        { no_immatriculation: { [Op.like]: s } },
+      ];
+    }
+
+    const result = await Employe.findAndCountAll({
+      where,
+      include: [{ association: 'prefecture' }],
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset,
+    });
+
+    const totalPages = Math.ceil(result.count / limit);
+    // Mappe les champs du modèle vers les noms attendus par le frontend
+    const employes = result.rows.map((e) => {
+      const p = e.toJSON();
+      return {
+        ...p,
+        sexe: p.gender,
+        poste: p.fonction,
+        salaire_brut: p.salary ? Number(p.salary) : null,
+        salaire_base: p.salary ? Number(p.salary) : null,
+        date_naissance: p.date_of_birth,
+        lieu_naissance: p.place_of_birth,
+        nationalite: p.nationality,
+        date_embauche: p.worked_date,
+        adresse: p.adress,
+        is_active: !p.is_out,
+      };
+    });
+    return res.status(200).json({
+      success: true,
+      data: {
+        employes,
+        pagination: { page, limit, total: result.count, totalPages },
+      },
+    });
+  } catch (error) {
+    console.error('[EMPLOYE_LIST_ADMIN] Error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+/**
  * GET /api/v1/employe/stats
  *
- * Nombre d'employés de l'employeur connecté : total, immatriculés, non immatriculés.
- * Middleware: EmployeurToken
+ * Nombre d'employés : total, immatriculés, actifs, sortis, hommes, femmes.
+ * Supporte deux modes :
+ *   - Admin (verifyToken) : employeurId obligatoire en query param
+ *   - Employeur (EmployeurToken) : employeurId tiré du token
  */
-router.get('/stats', EmployeurToken, async (req, res) => {
+router.get('/stats', async (req, res) => {
+  // Essaie d'abord verifyToken (admin back-office), sinon EmployeurToken
+  const tryAdmin = () => new Promise((resolve) => {
+    verifyToken(req, res, (err) => resolve(!err));
+  });
+  const tryEmployeur = () => new Promise((resolve) => {
+    EmployeurToken(req, res, (err) => resolve(!err));
+  });
+
+  const isAdmin = await tryAdmin();
+  if (!isAdmin) {
+    const isEmployeur = await tryEmployeur();
+    if (!isEmployeur) {
+      return res.status(401).json({ success: false, message: 'Non autorisé' });
+    }
+  }
+
   try {
-    const employeurId = req.user.user_id;
+    let employeurId;
+    if (req.query.employeurId) {
+      employeurId = parseInt(req.query.employeurId);
+    } else if (req.user?.user_id) {
+      employeurId = req.user.user_id;
+    }
 
-    const total = await Employe.count({
-      where: { employeurId }
-    });
+    if (!employeurId || isNaN(employeurId)) {
+      return res.status(400).json({ success: false, message: 'employeurId requis' });
+    }
 
-    const immatricules = await Employe.count({
-      where: { employeurId, is_imma: true }
-    });
-
-    const nonImmatricules = await Employe.count({
-      where: { employeurId, is_imma: false }
-    });
+    const [total, immatricules, actifs, hommes, femmes] = await Promise.all([
+      Employe.count({ where: { employeurId } }),
+      Employe.count({ where: { employeurId, is_imma: true } }),
+      Employe.count({ where: { employeurId, is_out: false } }),
+      Employe.count({ where: { employeurId, gender: 'M' } }),
+      Employe.count({ where: { employeurId, gender: 'F' } }),
+    ]);
 
     return res.status(200).json({
-      total,
-      immatricules,
-      nonImmatricules
+      success: true,
+      data: {
+        total,
+        immatricules,
+        nonImmatricules: total - immatricules,
+        actifs,
+        inactifs: total - actifs,
+        hommes,
+        femmes,
+      }
     });
   } catch (error) {
     console.error('[EMPLOYE_STATS] Error:', error);
-    return res.status(500).json({ message: 'Erreur interne du serveur' });
+    return res.status(500).json({ success: false, message: 'Erreur interne du serveur' });
   }
 });
 
@@ -407,12 +521,19 @@ router.get('/stats', EmployeurToken, async (req, res) => {
 router.get('/list', EmployeurToken, async (req, res) => {
   try {
     const { page, limit, offset } = getPaginationParams(req);
-    const { search, matricule, nom, prenom, immatriculation, telephone } = req.query;
+    const { search, matricule, nom, prenom, immatriculation, telephone, includeInactive, immatriculesOnly } = req.query;
 
     const where = {
-      employeurId: req.user.user_id,
-      is_out: false
+      employeurId: req.user.user_id
     };
+    // Par défaut : uniquement les employés actifs (non sortis). Si includeInactive=true, on inclut aussi les inactifs.
+    if (!includeInactive || String(includeInactive).toLowerCase() !== 'true') {
+      where.is_out = false;
+    }
+    // Si immatriculesOnly=true (ex: page Fiche Employé), n'inclure que les employés immatriculés (is_imma true).
+    if (immatriculesOnly && String(immatriculesOnly).toLowerCase() === 'true') {
+      where.is_imma = true;
+    }
 
     // Recherche globale (un seul terme dans tous les champs)
     const searchTerm = (search && String(search).trim()) || null;
@@ -619,13 +740,23 @@ const ensureEmployeBelongsToEmployeur = async (employeId, employeurId) => {
  * GET /api/v1/employe/:id
  * Détail d'un employé (fiche, modals) + quick stats (mois cotisés, total cotisations, enfants déclarés, années carrière).
  */
-router.get('/:id', EmployeurToken, async (req, res) => {
+router.get('/:id', async (req, res) => {
+  const tryAdmin = () => new Promise((resolve) => { verifyToken(req, res, (err) => resolve(!err)); });
+  const tryEmployeur = () => new Promise((resolve) => { EmployeurToken(req, res, (err) => resolve(!err)); });
+  const isAdmin = await tryAdmin();
+  if (!isAdmin) {
+    const isEmployeur = await tryEmployeur();
+    if (!isEmployeur) return res.status(401).json({ message: 'Non autorisé' });
+  }
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
-    const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
-    if (error) return res.status(error).json({ message });
-    const full = await Employe.findByPk(employe.id, {
+    if (!isAdmin) {
+      const { error, message, employe: owned } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+      if (error) return res.status(error).json({ message });
+      void owned;
+    }
+    const full = await Employe.findByPk(id, {
       include: [
         { association: 'employeur', attributes: ['id', 'raison_sociale', 'no_immatriculation', 'adresse'] },
         { association: 'prefecture' }
@@ -684,12 +815,26 @@ router.get('/:id', EmployeurToken, async (req, res) => {
  * Mise à jour de la photo de l'employé (multipart/form-data, champ avatar ou photo).
  * Réponse : 200 avec objet employé mis à jour + avatar_url.
  */
-router.patch('/:id/avatar', EmployeurToken, employeUpload.fields([{ name: 'avatar', maxCount: 1 }, { name: 'photo', maxCount: 1 }]), async (req, res) => {
+router.patch('/:id/avatar', async (req, res, next) => {
+  const tryAdmin = () => new Promise((resolve) => { verifyToken(req, res, (err) => resolve(!err)); });
+  const tryEmployeur = () => new Promise((resolve) => { EmployeurToken(req, res, (err) => resolve(!err)); });
+  const isAdmin = await tryAdmin();
+  if (!isAdmin) {
+    const isEmployeur = await tryEmployeur();
+    if (!isEmployeur) return res.status(401).json({ message: 'Non autorisé' });
+  }
+  req._isAdmin = isAdmin;
+  next();
+}, employeUpload.fields([{ name: 'avatar', maxCount: 1 }, { name: 'photo', maxCount: 1 }]), async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
-    const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
-    if (error) return res.status(error).json({ message });
+    let employe = await Employe.findByPk(id);
+    if (!employe) return res.status(404).json({ message: 'Employé non trouvé' });
+    if (!req._isAdmin) {
+      const { error, message } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+      if (error) return res.status(error).json({ message });
+    }
     const files = req.files || {};
     const file = (files['avatar'] && files['avatar'][0]) || (files['photo'] && files['photo'][0]);
     if (!file) return res.status(400).json({ message: 'Fichier requis (champ avatar ou photo en multipart/form-data)' });
@@ -715,13 +860,27 @@ router.patch('/:id/avatar', EmployeurToken, employeUpload.fields([{ name: 'avata
  * PATCH /api/v1/employe/:id
  * Mise à jour des champs employé (modal édition).
  */
-router.patch('/:id', EmployeurToken, async (req, res) => {
+router.patch('/:id', async (req, res) => {
+  const tryAdmin = () => new Promise((resolve) => { verifyToken(req, res, (err) => resolve(!err)); });
+  const tryEmployeur = () => new Promise((resolve) => { EmployeurToken(req, res, (err) => resolve(!err)); });
+  const isAdmin = await tryAdmin();
+  if (!isAdmin) {
+    const isEmployeur = await tryEmployeur();
+    if (!isEmployeur) return res.status(401).json({ message: 'Non autorisé' });
+  }
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
-    const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
-    if (error) return res.status(error).json({ message });
-    const allowed = ['first_name', 'last_name', 'email', 'phone_number', 'fonction', 'adress', 'date_of_birth', 'place_of_birth', 'nationality', 'situation_matrimoniale', 'ville', 'type_contrat', 'salary', 'father_first_name', 'father_last_name', 'mother_first_name', 'mother_last_name', 'father_date_of_birth', 'mother_date_of_birth', 'father_statut', 'mother_statut'];
+    let employe = await Employe.findByPk(id);
+    if (!employe) return res.status(404).json({ message: 'Employé non trouvé' });
+    if (!isAdmin) {
+      const { error, message } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+      if (error) return res.status(error).json({ message });
+    }
+    if (employe.is_imma) {
+      return res.status(403).json({ message: 'Impossible de modifier un employé validé.' });
+    }
+    const allowed = ['first_name', 'last_name', 'email', 'phone_number', 'matricule', 'fonction', 'adress', 'date_of_birth', 'place_of_birth', 'nationality', 'situation_matrimoniale', 'ville', 'prefectureId', 'type_contrat', 'salary', 'worked_date', 'identity_number', 'father_first_name', 'father_last_name', 'mother_first_name', 'mother_last_name', 'father_date_of_birth', 'mother_date_of_birth', 'father_statut', 'mother_statut'];
     const updates = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
@@ -750,14 +909,31 @@ router.post('/:id/sortie', EmployeurToken, async (req, res) => {
     if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
     const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
     if (error) return res.status(error).json({ message });
+    const employeurId = req.user.user_id;
     const { out_date, last_work_day, exit_reason, notice_period, notes } = req.body;
+    const outDate = out_date ? new Date(out_date) : new Date();
+
     await employe.update({
+      employeurId: null,
       is_out: true,
-      out_date: out_date ? new Date(out_date) : new Date(),
+      out_date: outDate,
       exit_reason: exit_reason || null,
       notice_period: notice_period || null,
       exit_notes: notes || null
     });
+
+    // Mettre à jour la carrière (table carriers) : date_sortie + motif/préavis/notes pour cet employeur
+    const carriere = await Carer.findOne({
+      where: { employeId: id, employeurId }
+    });
+    if (carriere) {
+      carriere.date_sortie = outDate;
+      carriere.exit_reason = exit_reason || null;
+      carriere.notice_period = notice_period || null;
+      carriere.exit_notes = notes || null;
+      await carriere.save();
+    }
+
     const updated = await Employe.findByPk(employe.id, {
       include: [
         { association: 'employeur', attributes: ['id', 'raison_sociale', 'no_immatriculation'] },
@@ -1118,6 +1294,62 @@ router.patch('/:id/famille', EmployeurToken, familleUpload.any(), async (req, re
 });
 
 /**
+ * GET /api/v1/employe/:id/cotisations/pdf
+ * Génère le PDF de l'historique des cotisations (toutes périodes).
+ */
+router.get('/:id/cotisations/pdf', EmployeurToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
+    const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+    if (error) return res.status(error).json({ message });
+    const declarations = await Demploye.findAll({
+      where: { employeId: id },
+      include: [{ model: CotisationEmployeur, as: 'cotisation_employeur', attributes: ['id', 'is_paid'] }],
+      order: [['year', 'ASC'], ['periode', 'ASC']]
+    });
+    let totalMois = 0;
+    let totalCotisations = 0;
+    const fullData = declarations.map(d => {
+      const decl = d.toJSON ? d.toJSON() : d;
+      const cot = decl.cotisation_employeur || {};
+      const paid = !!cot.is_paid;
+      if (paid) {
+        totalMois += 1;
+        totalCotisations += Number(decl.total_cotisation || 0);
+      }
+      const periodLabel = decl.periode && decl.year ? `${decl.periode} ${decl.year}` : `${decl.year}`;
+      return {
+        periode: periodLabel,
+        salaire_brut: decl.salary_brut,
+        cotisation_salariale: decl.cotisation_employe,
+        cotisation_patronale: decl.cotisation_emplyeur,
+        total: decl.total_cotisation,
+        statut: paid ? 'paye' : 'en_attente'
+      };
+    });
+    const paidDeclarations = declarations.filter(d => (d.toJSON ? d.toJSON() : d).cotisation_employeur?.is_paid);
+    const lastDecl = paidDeclarations.length ? paidDeclarations[paidDeclarations.length - 1] : null;
+    const lastLabel = lastDecl && lastDecl.periode && lastDecl.year ? `${lastDecl.periode} ${lastDecl.year}` : (lastDecl && lastDecl.year ? String(lastDecl.year) : null);
+    const summary = {
+      total_mois_cotises: totalMois,
+      total_cotisations: totalCotisations,
+      derniere_cotisation: lastLabel
+    };
+    const employeData = employe.toJSON ? employe.toJSON() : employe;
+    const pdfBuffer = await generateCotisationsPdfBuffer(employeData, summary, fullData);
+    const nom = (employeData.last_name || 'cotisations').replace(/\s+/g, '-');
+    const filename = `cotisations-${nom}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.status(200).send(pdfBuffer);
+  } catch (err) {
+    console.error('[EMPLOYE_COTISATIONS_PDF]', err);
+    return res.status(500).json({ message: 'Erreur lors de la génération du PDF des cotisations' });
+  }
+});
+
+/**
  * GET /api/v1/employe/:id/cotisations
  * Historique des cotisations (summary + data par période).
  * Query optionnels : page (défaut 1), limit (ex. 10) — pagination côté serveur.
@@ -1352,6 +1584,33 @@ router.get('/:id/card/pdf', EmployeurToken, async (req, res) => {
   } catch (err) {
     console.error('[EMPLOYE_CARD_PDF]', err);
     return res.status(500).json({ message: 'Erreur lors de la génération de la carte' });
+  }
+});
+
+/**
+ * GET /api/v1/employe/:id/fiche/pdf
+ * Génère le PDF de la fiche employé (design modal détail).
+ */
+router.get('/:id/fiche/pdf', EmployeurToken, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: 'ID invalide' });
+    const { error, message, employe } = await ensureEmployeBelongsToEmployeur(id, req.user.user_id);
+    if (error) return res.status(error).json({ message });
+    const full = await Employe.findByPk(employe.id, {
+      include: [{ association: 'prefecture', attributes: ['id', 'name', 'code'] }]
+    });
+    if (!full) return res.status(404).json({ message: 'Employé non trouvé' });
+    const data = full.toJSON ? full.toJSON() : full;
+    const pdfBuffer = await generateFicheEmployePdfBuffer(data);
+    const nom = (data.last_name || 'employe').replace(/\s+/g, '-');
+    const filename = `fiche-employe-${nom}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.status(200).send(pdfBuffer);
+  } catch (err) {
+    console.error('[EMPLOYE_FICHE_PDF]', err);
+    return res.status(500).json({ message: 'Erreur lors de la génération de la fiche' });
   }
 });
 
@@ -1930,14 +2189,513 @@ router.post('/import_excel_adhesion', EmployeurToken, employeUpload.single('exce
 });
 
 // ============================================
+// 3b. ROUTES ADMIN (verifyToken + employeurId dans body/query)
+// ============================================
+
+/**
+ * POST /api/v1/employe/admin/save
+ *
+ * Crée un nouvel employé depuis le back-office admin avec fichiers (CNI, avatar, contrat).
+ * Middleware: verifyToken, employeUpload.fields([cni, avatar, contrat_file])
+ * FormData: employe (JSON string), cni (file, requis), avatar (file, requis), contrat_file (file, optionnel)
+ */
+router.post('/admin/save', verifyToken, employeUpload.fields(employeFileFields), async (req, res) => {
+  try {
+    const files = req.files || {};
+
+    if (!files['cni'] || !files['cni'][0]) {
+      return res.status(400).json({ success: false, message: 'Fichier CNI requis' });
+    }
+    if (!files['avatar'] || !files['avatar'][0]) {
+      return res.status(400).json({ success: false, message: 'Photo de profil requise' });
+    }
+
+    let data;
+    try {
+      data = JSON.parse(req.body.employe);
+    } catch (_) {
+      return res.status(400).json({ success: false, message: 'Données employé invalides (JSON)' });
+    }
+
+    const {
+      employeurId, first_name, last_name, gender, date_of_birth, place_of_birth,
+      nationality, situation_matrimoniale, phone_number, email, matricule,
+      fonction, type_contrat, worked_date, salary, prefecture,
+      father_last_name, father_first_name, mother_last_name, mother_first_name,
+      type_piece, num_piece, identity_number, ville, quartier, adress
+    } = data;
+
+    if (!employeurId) return res.status(400).json({ success: false, message: 'employeurId requis' });
+    if (!first_name) return res.status(400).json({ success: false, message: 'Prénom requis' });
+    if (!last_name) return res.status(400).json({ success: false, message: 'Nom requis' });
+    if (!gender) return res.status(400).json({ success: false, message: 'Genre requis' });
+    if (!fonction) return res.status(400).json({ success: false, message: 'Fonction requise' });
+    if (!type_contrat) return res.status(400).json({ success: false, message: 'Type de contrat requis' });
+    if (!worked_date) return res.status(400).json({ success: false, message: "Date d'embauche requise" });
+    if (salary == null || salary === '') return res.status(400).json({ success: false, message: 'Salaire requis' });
+
+    const avatarPath = 'uploads/' + path.basename(files['avatar'][0].path);
+    const cniPath = 'uploads/' + path.basename(files['cni'][0].path);
+    const contratPath = (files['contrat_file'] && files['contrat_file'][0])
+      ? 'uploads/' + path.basename(files['contrat_file'][0].path)
+      : null;
+
+    const employe = await Employe.create({
+      employeurId: parseInt(employeurId),
+      prefectureId: prefecture ? parseInt(prefecture) : null,
+      first_name: String(first_name).trim(),
+      last_name: String(last_name).trim(),
+      gender,
+      date_of_birth: date_of_birth || null,
+      place_of_birth: place_of_birth || null,
+      nationality: nationality || null,
+      situation_matrimoniale: situation_matrimoniale || null,
+      phone_number: phone_number || null,
+      email: email || null,
+      matricule: matricule || null,
+      fonction: String(fonction).trim(),
+      type_contrat,
+      worked_date: new Date(worked_date),
+      date_first_embauche: new Date(worked_date),
+      salary: Number(salary),
+      avatar: avatarPath,
+      cni_file: cniPath,
+      contrat_file: contratPath,
+      father_last_name: father_last_name || null,
+      father_first_name: father_first_name || null,
+      mother_last_name: mother_last_name || null,
+      mother_first_name: mother_first_name || null,
+      type_piece: type_piece || null,
+      num_piece: num_piece || identity_number || null,
+      ville: ville || null,
+      quartier: quartier || null,
+      adress: adress || null,
+      no_immatriculation: null,
+      is_imma: false,
+      is_out: false,
+    });
+
+    return res.status(200).json({ success: true, data: employe });
+  } catch (error) {
+    console.error('[EMPLOYE_ADMIN_SAVE]', error);
+    let message = utility.formatSequelizeError ? utility.formatSequelizeError(error) : error.message;
+    if (error.fields) {
+      const field = Object.keys(error.fields)[0];
+      const labels = { phone_number: 'Ce numéro de téléphone', email: 'Cet email' };
+      message = `${labels[field] || 'Cette valeur'} existe déjà.`;
+    }
+    return res.status(400).json({ success: false, message });
+  }
+});
+
+/**
+ * POST /api/v1/employe/admin/import_excel
+ *
+ * Import d'employés depuis Excel — version admin.
+ * Middleware: verifyToken
+ * FormData: excel (file), employeurId (string)
+ */
+router.post('/admin/import_excel', verifyToken, employeUpload.single('excel'), async (req, res) => {
+  try {
+    if (!req.file || !req.file.path) {
+      return res.status(400).json({ success: false, message: 'Fichier Excel requis' });
+    }
+
+    const employeurId = parseInt(req.body.employeurId);
+    if (!employeurId || isNaN(employeurId)) {
+      return res.status(400).json({ success: false, message: 'employeurId requis' });
+    }
+
+    const workbook = XLSX.readFile(req.file.path, { type: 'file', cellDates: false });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+
+    if (!rows || rows.length < 2) {
+      return res.status(400).json({ success: false, message: "Le fichier doit contenir une ligne d'en-têtes et au moins une ligne de données." });
+    }
+
+    const headers = rows[0].map(h => normalizeHeader(h));
+    const dataRows = rows.slice(1);
+    const errors = [];
+    const toCreate = [];
+
+    for (let i = 0; i < dataRows.length; i++) {
+      const row = dataRows[i];
+      const rowNum = i + 2;
+      const record = {};
+      for (let c = 0; c < headers.length; c++) {
+        const key = EXCEL_COLUMN_MAP[headers[c]];
+        if (key && key !== 'prefecture_name') {
+          let val = row[c];
+          if (typeof val === 'string') val = val.trim();
+          record[key] = val;
+        } else if (key === 'prefecture_name') {
+          let val = row[c];
+          if (typeof val === 'string') val = val.trim();
+          record.prefectureName = val;
+        }
+      }
+
+      const first_name = record.first_name ? String(record.first_name).trim() : '';
+      const last_name = record.last_name ? String(record.last_name).trim() : '';
+      const email = record.email ? String(record.email).trim() : null;
+      const phone_number = record.phone_number ? String(record.phone_number).replace(/\s/g, '') : null;
+
+      if (!first_name) errors.push({ row: rowNum, field: 'Prenom', message: 'Prénom requis.' });
+      if (!last_name) errors.push({ row: rowNum, field: 'Nom', message: 'Nom requis.' });
+
+      if (email) {
+        const exists = await Employe.findOne({ where: { email } });
+        if (exists) errors.push({ row: rowNum, field: 'Email', message: 'Email déjà utilisé.' });
+      }
+      if (phone_number) {
+        const exists = await Employe.findOne({ where: { phone_number } });
+        if (exists) errors.push({ row: rowNum, field: 'Telephone', message: 'Téléphone déjà utilisé.' });
+      }
+
+      const prefectureName = record.prefectureName ? String(record.prefectureName).trim() : '';
+      let prefectureId = null;
+      if (prefectureName) {
+        const pref = await Prefecture.findOne({
+          where: sequelize.where(sequelize.fn('LOWER', sequelize.col('name')), sequelize.fn('LOWER', prefectureName))
+        });
+        if (!pref) errors.push({ row: rowNum, field: 'Prefecture', message: `Préfecture introuvable : "${prefectureName}".` });
+        else prefectureId = pref.id;
+      }
+
+      if (errors.length === 0 || errors[errors.length - 1].row !== rowNum) {
+        toCreate.push({
+          employeurId,
+          first_name,
+          last_name,
+          email,
+          phone_number,
+          gender: record.gender || null,
+          date_of_birth: record.date_of_birth || null,
+          prefectureId,
+          worked_date: record.worked_date || null,
+          date_first_embauche: record.worked_date || null,
+          salary: record.salary ? Number(record.salary) : null,
+          type_contrat: record.type_contrat || null,
+          matricule: record.matricule || null,
+          fonction: record.fonction || null,
+          situation_matrimoniale: record.situation_matrimoniale || null,
+          is_imma: false,
+          is_out: false,
+        });
+      }
+    }
+
+    if (errors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Import annulé : des erreurs ont été détectées.',
+        errors,
+        errorsText: errors.map(e => `Ligne ${e.row} – ${e.field} : ${e.message}`).join('\n')
+      });
+    }
+
+    if (toCreate.length === 0) {
+      return res.status(400).json({ success: false, message: 'Aucune ligne valide à importer.' });
+    }
+
+    const t = await sequelize.transaction();
+    try {
+      await Employe.bulkCreate(toCreate, { transaction: t, validate: true });
+      await t.commit();
+      return res.status(200).json({ success: true, message: `${toCreate.length} employé(s) importé(s).`, count: toCreate.length });
+    } catch (bulkErr) {
+      await t.rollback();
+      return res.status(400).json({ success: false, message: bulkErr.message || "Erreur lors de l'import." });
+    }
+  } catch (error) {
+    console.error('[EMPLOYE_ADMIN_IMPORT]', error);
+    return res.status(500).json({ success: false, message: 'Erreur interne' });
+  } finally {
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+    }
+  }
+});
+
+/**
+ * POST /api/v1/employe/admin/import_excel_adhesion
+ *
+ * Import d'employés déjà immatriculés (adhesion) — version admin.
+ * Middleware: verifyToken
+ * FormData: excel (file), employeurId (string)
+ */
+router.post('/admin/import_excel_adhesion', verifyToken, employeUpload.single('excel'), async (req, res) => {
+  try {
+    if (!req.file || !req.file.path) {
+      return res.status(400).json({ success: false, message: 'Fichier Excel requis' });
+    }
+
+    const employeurId = parseInt(req.body.employeurId);
+    if (!employeurId || isNaN(employeurId)) {
+      return res.status(400).json({ success: false, message: 'employeurId requis' });
+    }
+
+    const workbook = XLSX.readFile(req.file.path, { type: 'file', cellDates: false });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+
+    if (!rows || rows.length < 2) {
+      return res.status(400).json({ success: false, message: "Le fichier doit contenir une ligne d'en-têtes et au moins une ligne de données." });
+    }
+
+    const headers = rows[0].map(h => normalizeHeader(h));
+    const dataRows = rows.slice(1);
+    const errors = [];
+    const toCreate = [];
+
+    for (let i = 0; i < dataRows.length; i++) {
+      const errorsAtStart = errors.length;
+      const row = dataRows[i];
+      const rowNum = i + 2;
+      const record = {};
+      for (let c = 0; c < headers.length; c++) {
+        const key = EXCEL_COLUMN_MAP_ADHESION[headers[c]];
+        if (key) {
+          let val = row[c];
+          if (val !== undefined && val !== null && typeof val === 'string') val = val.trim();
+          record[key] = val;
+        }
+      }
+
+      const no_immatriculation = (record.no_immatriculation != null && record.no_immatriculation !== '') ? String(record.no_immatriculation).replace(/\s/g, '') : '';
+      const first_name = (record.first_name != null && record.first_name !== '') ? String(record.first_name).trim() : '';
+      const last_name = (record.last_name != null && record.last_name !== '') ? String(record.last_name).trim() : '';
+      const emailRaw = (record.email != null && record.email !== '') ? String(record.email).trim() : '';
+      const phoneRaw = (record.phone_number != null && record.phone_number !== '') ? String(record.phone_number).replace(/\s/g, '') : '';
+      const email = emailRaw || null;
+      const phone_number = phoneRaw || null;
+
+      if (!no_immatriculation) errors.push({ row: rowNum, field: 'N° Immatriculation', message: "N° d'immatriculation requis." });
+      if (!first_name) errors.push({ row: rowNum, field: 'Prenom', message: 'Prénom requis.' });
+      if (!last_name) errors.push({ row: rowNum, field: 'Nom', message: 'Nom requis.' });
+
+      if (no_immatriculation) {
+        const existingNo = await Employe.findOne({ where: { no_immatriculation } });
+        if (existingNo) errors.push({ row: rowNum, field: 'N° Immatriculation', message: "Un employé avec ce numéro d'immatriculation existe déjà." });
+      }
+      if (email) {
+        const existingEmail = await Employe.findOne({ where: { email } });
+        if (existingEmail) errors.push({ row: rowNum, field: 'Email', message: 'Un employé avec cet email existe déjà.' });
+      }
+      if (phone_number) {
+        const existingPhone = await Employe.findOne({ where: { phone_number } });
+        if (existingPhone) errors.push({ row: rowNum, field: 'Telephone', message: 'Un employé avec ce numéro de téléphone existe déjà.' });
+      }
+
+      if (errors.length > errorsAtStart) continue;
+
+      const salary = parseNumber(record.salary);
+      toCreate.push({
+        no_immatriculation,
+        first_name,
+        last_name,
+        email,
+        phone_number,
+        salary: salary != null ? salary : null,
+        type_contrat: (record.type_contrat != null && record.type_contrat !== '') ? String(record.type_contrat).trim() : null,
+        matricule: (record.matricule != null && record.matricule !== '') ? String(record.matricule).trim() : null,
+        fonction: (record.fonction != null && record.fonction !== '') ? String(record.fonction).trim() : null,
+        employeurId,
+        is_imma: false,
+        is_adhesion: true,
+        is_out: false
+      });
+    }
+
+    if (errors.length > 0) {
+      const errorsText = errors.map(e => `Ligne ${e.row} - ${e.field} : ${e.message}`).join('\n');
+      return res.status(400).json({ success: false, message: 'Import annulé : des erreurs ont été détectées. Corrigez le fichier et réessayez.', errors, errorsText });
+    }
+
+    if (toCreate.length === 0) {
+      return res.status(400).json({ success: false, message: 'Aucune ligne de donnée valide à importer.' });
+    }
+
+    if (toCreate.length > 1000) {
+      return res.status(400).json({ success: false, message: 'Maximum 1000 employés par import.' });
+    }
+
+    const t = await sequelize.transaction();
+    try {
+      await Employe.bulkCreate(toCreate, { transaction: t, validate: true });
+      await t.commit();
+      return res.status(200).json({ success: true, message: `${toCreate.length} employé(s) déjà immatriculés importé(s) avec succès.`, count: toCreate.length });
+    } catch (bulkError) {
+      await t.rollback();
+      return res.status(400).json({ success: false, message: bulkError.message || "Erreur lors de l'import." });
+    }
+  } catch (error) {
+    console.error('[EMPLOYE_ADMIN_IMPORT_ADHESION]', error);
+    return res.status(500).json({ success: false, message: 'Erreur interne du serveur' });
+  } finally {
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+    }
+  }
+});
+
+/**
+ * POST /api/v1/employe/admin/verify
+ *
+ * Vérifie si un employé existe par N° immatriculation (nouvelle DB ou ancienne).
+ * Middleware: verifyToken
+ * Body: { code, employeurId }
+ */
+router.post('/admin/verify', verifyToken, async (req, res) => {
+  try {
+    const { code } = req.body;
+    if (!code) return res.status(400).json({ success: false, message: "N° d'immatriculation requis" });
+
+    const trimmed = code.trim();
+
+    // Recherche nouvelle DB
+    const employe = await Employe.findOne({
+      where: { no_immatriculation: trimmed },
+      include: [{ association: 'prefecture' }]
+    });
+
+    if (employe) {
+      if (!employe.is_out) {
+        return res.status(400).json({ success: false, message: "Cet employé est déjà rattaché à un employeur." });
+      }
+      const p = employe.toJSON();
+      return res.status(200).json({
+        success: true,
+        data: {
+          id: p.id,
+          first_name: p.first_name,
+          last_name: p.last_name,
+          gender: p.gender,
+          date_of_birth: p.date_of_birth,
+          place_of_birth: p.place_of_birth,
+          no_immatriculation: p.no_immatriculation,
+          from_external: false,
+        }
+      });
+    }
+
+    // Ancienne DB
+    const correctedCode = utility.corrigerNumero(trimmed);
+    try {
+      const ext = await axios.get(`${util_link}/c/${correctedCode}`);
+      if (ext.status === 200 && ext.data?.result) {
+        const d = ext.data.result;
+        return res.status(200).json({
+          success: true,
+          data: {
+            id: null,
+            first_name: d.prenoms || '',
+            last_name: d.nom || '',
+            gender: d.sexe || null,
+            date_of_birth: d.date_naissance || null,
+            place_of_birth: d.lieu_naissance || null,
+            no_immatriculation: d.no_employe || correctedCode,
+            from_external: true,
+          }
+        });
+      }
+    } catch (_) {}
+
+    return res.status(404).json({ success: false, message: 'Employé introuvable dans la base CNSS.' });
+  } catch (error) {
+    console.error('[EMPLOYE_ADMIN_VERIFY]', error);
+    return res.status(500).json({ success: false, message: 'Erreur interne' });
+  }
+});
+
+/**
+ * POST /api/v1/employe/admin/recruit
+ *
+ * Recrute un employé déjà immatriculé — version admin.
+ * Middleware: verifyToken
+ * Body: { code, employeurId, worked_date, salary, fonction, type_contrat, phone_number?, email? }
+ */
+router.post('/admin/recruit', verifyToken, async (req, res) => {
+  try {
+    const { code, employeurId, worked_date, salary, fonction, type_contrat, phone_number, email } = req.body;
+    if (!code) return res.status(400).json({ success: false, message: "Code d'immatriculation requis" });
+    if (!employeurId) return res.status(400).json({ success: false, message: 'employeurId requis' });
+    if (!worked_date) return res.status(400).json({ success: false, message: "Date d'embauche requise" });
+    if (!salary && salary !== 0) return res.status(400).json({ success: false, message: 'Salaire requis' });
+    if (!fonction) return res.status(400).json({ success: false, message: 'Fonction requise' });
+
+    const empId = parseInt(employeurId);
+    const trimmed = code.trim();
+    const salaryNum = Number(salary);
+
+    let employe = await Employe.findOne({ where: { no_immatriculation: trimmed, is_out: true } });
+
+    if (employe) {
+      const upd = { employeurId: empId, is_out: false, worked_date: new Date(worked_date), salary: salaryNum, fonction: String(fonction).trim() };
+      if (type_contrat) upd.type_contrat = type_contrat;
+      if (phone_number) upd.phone_number = phone_number;
+      if (email) upd.email = email;
+      await employe.update(upd);
+      await Carer.create({ employeId: employe.id, employeurId: empId, date_entre: new Date(worked_date) });
+      return res.status(200).json({ success: true, data: employe });
+    }
+
+    // Depuis ancienne DB
+    const correctedCode = utility.corrigerNumero(trimmed);
+    let extData;
+    try {
+      const ext = await axios.get(`${util_link}/c/${correctedCode}`);
+      if (ext.data?.result) extData = ext.data.result;
+    } catch (_) {}
+
+    if (!extData) return res.status(400).json({ success: false, message: 'Employé introuvable.' });
+
+    employe = await Employe.create({
+      employeurId: empId,
+      first_name: extData.prenoms || '',
+      last_name: extData.nom || '',
+      no_immatriculation: extData.no_employe || correctedCode,
+      date_of_birth: extData.date_naissance || null,
+      gender: extData.sexe || null,
+      place_of_birth: extData.lieu_naissance || null,
+      nationality: extData.nationalite || null,
+      mother_last_name: extData.nom_mere || null,
+      father_last_name: extData.nom_pere || null,
+      father_first_name: extData.prenom_pere || null,
+      mother_first_name: extData.prenom_mere || null,
+      type_contrat: type_contrat || 'CDI',
+      is_imma: true,
+      is_out: false,
+      worked_date: new Date(worked_date),
+      date_first_embauche: new Date(worked_date),
+      salary: salaryNum,
+      fonction: String(fonction).trim(),
+      phone_number: phone_number || null,
+      email: email || null,
+    });
+    await Carer.create({ employeId: employe.id, employeurId: empId, date_entre: new Date(worked_date) });
+
+    return res.status(200).json({ success: true, data: employe });
+  } catch (error) {
+    console.error('[EMPLOYE_ADMIN_RECRUIT]', error);
+    return res.status(400).json({ success: false, message: error.message || 'Erreur' });
+  }
+});
+
+// ============================================
 // 4. VÉRIFICATION ET RÉCUPÉRATION D'EMPLOYÉS
 // ============================================
 
 /**
  * POST /api/v1/employe/verify_employe
- * 
- * Vérifie si un employé est libre (a quitté son ancien employeur) et peut être recruté,
- * ou le crée depuis l'ancienne DB.
+ *
+ * Vérifie si un employé existe et est recrutable. Ne crée rien en base.
+ * - Trouvé en nouvelle DB (is_out: true) → retourne l'employé.
+ * - Trouvé uniquement en ancienne DB (externe) → retourne les infos en lecture seule (from_external: true).
+ * L'employé n'est créé qu'au recrutement (recruit_employe) après remplissage du formulaire.
  * Middleware: EmployeurToken
  */
 router.post('/verify_employe', EmployeurToken, async (req, res) => {
@@ -1948,67 +2706,55 @@ router.post('/verify_employe', EmployeurToken, async (req, res) => {
       return res.status(400).json({ message: 'Code d\'immatriculation requis' });
     }
 
-    // Recherche dans la nouvelle DB
+    const trimmedCode = code.trim();
+
+    // 1. Recherche dans la nouvelle DB
     const employe = await Employe.findOne({
-      where: { no_immatriculation: code },
+      where: { no_immatriculation: trimmedCode },
       include: [{ association: 'prefecture' }]
     });
 
     if (employe) {
       if (employe.is_out === true) {
-        // Employé libre
         return res.status(200).json(employe);
-      } else {
-        return res.status(400).json({ message: "Cet employé n'est pas encore libre" });
       }
+      return res.status(400).json({ message: "Cet employé n'est pas encore libre" });
     }
 
-    // Si non trouvé, cherche dans l'ancienne DB
-    let correctedCode = utility.corrigerNumero(code);
-    
+    // 2. Non trouvé en base locale : interroger le serveur externe (lecture seule, pas de create)
+    const correctedCode = utility.corrigerNumero(trimmedCode);
     try {
       const getResponse = await axios.get(`${util_link}/c/${correctedCode}`);
-      
+
       if (getResponse.status === 200 && getResponse.data && getResponse.data.result) {
         const oldData = getResponse.data.result;
-
-        // Crée l'employé avec les données de l'ancienne DB
-        const newEmploye = await Employe.create({
-          employeurId: req.user.user_id,
-          first_name: oldData.prenoms,
-          last_name: oldData.nom,
-          no_immatriculation: oldData.no_employe,
-          date_of_birth: oldData.date_naissance,
-          gender: oldData.sexe,
-          place_of_birth: oldData.lieu_naissance,
-          nationality: oldData.nationalite,
-          mother_last_name: oldData.nom_mere,
-          father_last_name: oldData.nom_pere,
-          father_first_name: oldData.prenom_pere,
-          mother_first_name: oldData.prenom_mere,
-          type_contrat: 'Permanent',
+        const payload = {
+          id: null,
+          first_name: oldData.prenoms || '',
+          last_name: oldData.nom || '',
+          no_immatriculation: oldData.no_employe || correctedCode,
+          date_of_birth: oldData.date_naissance || null,
+          gender: oldData.sexe || null,
+          place_of_birth: oldData.lieu_naissance || null,
+          nationality: oldData.nationalite || null,
+          mother_last_name: oldData.nom_mere || null,
+          father_last_name: oldData.nom_pere || null,
+          father_first_name: oldData.prenom_pere || null,
+          mother_first_name: oldData.prenom_mere || null,
+          worked_date: oldData.date_embauche || null,
+          phone_number: null,
+          email: null,
+          fonction: null,
+          salary: null,
+          type_contrat: null,
           is_imma: true,
-          worked_date: oldData.date_embauche,
-          is_adhesion: true,
-          is_insert_oldDB: true
-        });
-
-        // Crée la carrière
-        await Carer.create({
-          employeId: newEmploye.id,
-          employeurId: req.user.user_id,
-          date_entre: oldData.date_embauche
-        });
-
-        // Reload with relations
-        await newEmploye.reload({ 
-          include: [{ association: 'prefecture' }]
-        });
-
-        return res.status(200).json(newEmploye);
-      } else {
-        return res.status(400).json({ message: 'Employé non trouvé' });
+          is_out: true,
+          employeurId: null,
+          from_external: true
+        };
+        return res.status(200).json(payload);
       }
+      return res.status(400).json({ message: 'Employé non trouvé' });
     } catch (oldDbError) {
       console.error('[EMPLOYE_VERIFY] Old DB error:', oldDbError);
       return res.status(400).json({ message: 'Employé non trouvé' });
@@ -2016,6 +2762,118 @@ router.post('/verify_employe', EmployeurToken, async (req, res) => {
   } catch (error) {
     console.error('[EMPLOYE_VERIFY] Error:', error);
     return res.status(400).json({ message: 'Erreur' });
+  }
+});
+
+/**
+ * POST /api/v1/employe/recruit_employe
+ *
+ * Rattache un employé déjà immatriculé (libre, is_out: true) à l'employeur connecté.
+ * Le formulaire (étape 2 du stepper) doit être rempli : l'employé n'est ajouté qu'après envoi des champs requis.
+ * Body: { code: string, worked_date: string, salary: number, fonction: string, phone_number?, email?, type_contrat? }
+ * Champs obligatoires: code, worked_date, salary, fonction.
+ * 200 → employé mis à jour + carrière créée. 400 → champs manquants ou employé non trouvé / pas libre.
+ */
+router.post('/recruit_employe', EmployeurToken, async (req, res) => {
+  try {
+    const { code, worked_date, salary, fonction, phone_number, email, type_contrat } = req.body;
+    if (!code || typeof code !== 'string') {
+      return res.status(400).json({ message: 'Code d\'immatriculation requis' });
+    }
+    if (!worked_date || (typeof worked_date === 'string' && !worked_date.trim())) {
+      return res.status(400).json({ message: 'La date d\'embauche est obligatoire' });
+    }
+    if (salary == null || salary === '' || (typeof salary === 'number' && Number.isNaN(salary))) {
+      return res.status(400).json({ message: 'Le salaire brut est obligatoire' });
+    }
+    const salaryNum = Number(salary);
+    if (Number.isNaN(salaryNum) || salaryNum < 0) {
+      return res.status(400).json({ message: 'Le salaire doit être un nombre positif' });
+    }
+    if (!fonction || (typeof fonction === 'string' && !fonction.trim())) {
+      return res.status(400).json({ message: 'La fonction est obligatoire' });
+    }
+
+    const employeurId = req.user.user_id;
+    const trimmedCode = code.trim();
+
+    let employe = await Employe.findOne({
+      where: { no_immatriculation: trimmedCode, is_out: true },
+      include: [{ association: 'prefecture' }]
+    });
+
+    if (employe) {
+      const updatePayload = {
+        employeurId,
+        is_out: false,
+        worked_date: new Date(worked_date),
+        salary: salaryNum,
+        fonction: String(fonction).trim()
+      };
+      if (type_contrat != null && type_contrat !== '') updatePayload.type_contrat = String(type_contrat).trim();
+      if (phone_number != null) updatePayload.phone_number = phone_number === '' ? null : String(phone_number).trim();
+      if (email != null) updatePayload.email = email === '' ? null : String(email).trim();
+      await employe.update(updatePayload);
+      const dateEntree = employe.worked_date ? new Date(employe.worked_date) : new Date();
+      await Carer.create({
+        employeId: employe.id,
+        employeurId,
+        date_entre: dateEntree
+      });
+      await employe.reload({ include: [{ association: 'prefecture' }] });
+      return res.status(200).json(employe);
+    }
+
+    // Employé pas en nouvelle DB : venant de l'externe, on crée uniquement au recrutement (formulaire rempli)
+    const correctedCode = utility.corrigerNumero(trimmedCode);
+    let getResponse;
+    try {
+      getResponse = await axios.get(`${util_link}/c/${correctedCode}`);
+    } catch (extErr) {
+      console.error('[EMPLOYE_RECRUIT] External API error:', extErr);
+      return res.status(400).json({
+        message: 'Employé non trouvé. Vérifiez le numéro ou effectuez une vérification d\'abord.'
+      });
+    }
+    if (!getResponse?.data?.result) {
+      return res.status(400).json({ message: 'Employé non trouvé' });
+    }
+    const oldData = getResponse.data.result;
+    const dateEntree = new Date(worked_date);
+    employe = await Employe.create({
+      employeurId,
+      first_name: oldData.prenoms || '',
+      last_name: oldData.nom || '',
+      no_immatriculation: oldData.no_employe || correctedCode,
+      date_of_birth: oldData.date_naissance || null,
+      gender: oldData.sexe || null,
+      place_of_birth: oldData.lieu_naissance || null,
+      nationality: oldData.nationalite || null,
+      mother_last_name: oldData.nom_mere || null,
+      father_last_name: oldData.nom_pere || null,
+      father_first_name: oldData.prenom_pere || null,
+      mother_first_name: oldData.prenom_mere || null,
+      type_contrat: (type_contrat && String(type_contrat).trim()) || 'Permanent',
+      is_imma: true,
+      is_out: false,
+      worked_date: dateEntree,
+      salary: salaryNum,
+      fonction: String(fonction).trim(),
+      phone_number: phone_number === '' || phone_number == null ? null : String(phone_number).trim(),
+      email: email === '' || email == null ? null : String(email).trim(),
+      is_adhesion: true,
+      is_insert_oldDB: true
+    });
+    await Carer.create({
+      employeId: employe.id,
+      employeurId,
+      date_entre: dateEntree
+    });
+    await employe.reload({ include: [{ association: 'prefecture' }] });
+    return res.status(200).json(employe);
+  } catch (error) {
+    console.error('[EMPLOYE_RECRUIT] Error:', error);
+    return res.status(500).json({ message: 'Erreur lors du recrutement' });
   }
 });
 
@@ -2477,7 +3335,7 @@ router.post('/update_employe_contrat_file/:employeId', EmployeurToken, employeUp
       return res.status(403).json({ message: 'Accès refusé' });
     }
 
-    Employe.contrat_file = files['contrat_file'][0].path;
+    Employe.contrat_file = 'uploads/' + path.basename(files['contrat_file'][0].path);
     await Employe.save();
 
     return res.status(200).json({ message: "ok ok" });
@@ -2516,7 +3374,7 @@ router.post('/update_employe_cni/:employeId', EmployeurToken, employeUpload.sing
       return res.status(403).json({ message: 'Accès refusé' });
     }
 
-    Employe.cni_file = req.file.path;
+    Employe.cni_file = 'uploads/' + path.basename(req.file.path);
     await Employe.save();
 
     return res.status(200).json({ message: "ok ok" });
@@ -2681,7 +3539,7 @@ router.post('/delete_employe/:id', verifyToken, async (req, res) => {
       return res.status(200).json({ message: 'EmployeDelete' });
     } else {
       // Si non immatriculé, supprime directement
-      await Employe.destroy();
+      await employe.destroy();
       return res.sendStatus(200);
     }
   } catch (error) {

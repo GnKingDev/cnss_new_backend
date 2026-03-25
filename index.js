@@ -25,7 +25,9 @@ const isMultipartPrestation = (req) => (req.method === 'POST' || req.method === 
   req.headers['content-type'] && String(req.headers['content-type']).startsWith('multipart/form-data');
 const isMultipartReclamation = (req) => req.method === 'POST' && req.originalUrl.includes('/reclamation/demandes') &&
   req.headers['content-type'] && String(req.headers['content-type']).startsWith('multipart/form-data');
-const skipBodyParse = (req) => isMultipartFamille(req) || isMultipartPrestation(req) || isMultipartReclamation(req);
+const isMultipartQuitus = (req) => req.method === 'POST' && req.originalUrl.includes('/quitus/demandes') &&
+  req.headers['content-type'] && String(req.headers['content-type']).startsWith('multipart/form-data');
+const skipBodyParse = (req) => isMultipartFamille(req) || isMultipartPrestation(req) || isMultipartReclamation(req) || isMultipartQuitus(req);
 app.use((req, res, next) => {
   if (skipBodyParse(req)) return next();
   bodyParser.json({ limit: '10mb' })(req, res, next);
@@ -66,12 +68,14 @@ const otpRoutes = require('./db/otp/route');
 const excelFileRoutes = require('./db/excel_file/route');
 const quitusRoutes = require('./db/quitus/route');
 const succursaleRoutes = require('./db/succursale/route');
-const dirgaUserRoutes = require('./db/dirga_user/route');
+const adminRoutes = require('./db/admin/route');
 const adhesionRoutes = require('./db/adhesion/route');
 const affiliationVolontaireRoutes = require('./db/affiliation-volontaire/route');
+const userAffiliationVolontaireRoutes = require('./db/user_affiliation_volontaire/route');
 const prestationRoutes = require('./db/prestation/route');
 const biometrieRoutes = require('./db/biometrie/route');
 const reclamationRoutes = require('./db/reclamation/route');
+const quitusMenuRoutes = require('./db/quitus_menu/route');
 
 // API Routes
 app.use('/api/pays', paysRoutes);
@@ -106,13 +110,29 @@ app.use('/api/otp', otpRoutes);
 app.use('/api/excel-files', excelFileRoutes);
 app.use('/api/quitus', quitusRoutes);
 app.use('/api/succursales', succursaleRoutes);
-app.use('/api/v1/dirga', dirgaUserRoutes); // Updated to match documentation
-app.use('/api/dirga-users', dirgaUserRoutes); // Keep for backward compatibility
-app.use('/api/adhesions', adhesionRoutes);
+app.use('/api/v1/admin', adminRoutes);
+app.use('/v1/admin', adminRoutes); // BO proxy: /api supprimé -> backend reçoit /v1/admin
+
+// Routes proxy-compatibles (Vite supprime le préfixe /api avant de transmettre au backend)
+app.use('/branches', brancheRoutes);
+app.use('/prefectures', prefectureRoutes);
+app.use('/employeurs', employeurRoutes);
+app.use('/employes', employeRoutes);
+app.use('/cotisations-employeur', cotisationEmployeurRoutes);
+app.use('/paiements', paiementRoutes.router || paiementRoutes);
+app.use('/demandes', demandeRoutes);
+app.use('/quittances', quittanceRoutes);
+app.use('/adhesions', adhesionRoutes);
+app.use('/affiliation-volontaire', affiliationVolontaireRoutes);
 app.use('/api/affiliations-volontaires', affiliationVolontaireRoutes);
+app.use('/api/v1/av/auth', userAffiliationVolontaireRoutes);
 app.use('/api/v1/prestations', prestationRoutes);
 app.use('/api/v1/biometrie', biometrieRoutes);
+app.use('/v1/biometrie', biometrieRoutes); // BO proxy: Vite supprime /api
 app.use('/api/v1/reclamation', reclamationRoutes);
+app.use('/v1/reclamation', reclamationRoutes); // BO proxy: Vite supprime /api
+app.use('/api/v1/quitus', quitusMenuRoutes);
+app.use('/v1/quitus', quitusMenuRoutes); // BO proxy: Vite supprime /api
 
 // Servir les PDFs depuis document/docs — GET /api/v1/docsx/:filename.pdf
 app.get('/api/v1/docsx/:filename', (req, res) => {
@@ -159,9 +179,46 @@ app.get('/health', async (req, res) => {
   }
 });
 
+// Sync affiliation_volontaire table then start server
+const AffiliationVolontaireModel = require('./db/affiliation-volontaire/model');
+AffiliationVolontaireModel.sync({ alter: true })
+  .then(() => console.log('✅ affiliation_volontaire table synced'))
+  .catch((err) => console.error('❌ affiliation_volontaire sync error:', err.message));
+
+// Sync reclamation_demandes (ajout colonne cotisation_employeur_id)
+const ReclamationDemandeModel = require('./db/reclamation/model');
+ReclamationDemandeModel.sync({ alter: true })
+  .then(() => console.log('✅ reclamation_demandes table synced'))
+  .catch((err) => console.error('❌ reclamation_demandes sync error:', err.message));
+
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  runAvDeclarationsCron();
 });
+
+/** Au démarrage : génération automatique des déclarations pour tous les affiliés volontaires (cron au lancement). */
+function runAvDeclarationsCron() {
+  const run = async () => {
+    try {
+      const AffiliationVolontaire = require('./db/affiliation-volontaire/model');
+      const { ensureDeclarationsForAffiliation } = require('./db/declaration_affiliation_volontaire/ensure-declarations');
+      await sequelize.authenticate();
+      const affiliations = await AffiliationVolontaire.findAll({ attributes: ['id'], order: [['id', 'ASC']] });
+      let totalCreated = 0;
+      for (const aff of affiliations) {
+        const row = aff.get ? aff.get({ plain: true }) : aff;
+        const { created } = await ensureDeclarationsForAffiliation(row.id);
+        totalCreated += created;
+      }
+      if (affiliations.length > 0) {
+        console.log('[AV cron] Déclarations auto :', affiliations.length, 'affilié(s),', totalCreated, 'ligne(s) créée(s)');
+      }
+    } catch (err) {
+      console.error('[AV cron] Erreur:', err.message);
+    }
+  };
+  setImmediate(run);
+}
 
 module.exports = app;

@@ -99,6 +99,11 @@ const Employeur = sequelize.define('Employeur', {
     type: DataTypes.TEXT,
     allowNull: true
   },
+  nif_file: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    comment: 'Fichier NIF - Numéro d\'Identification Fiscale'
+  },
   no_agrement: {
     type: DataTypes.TEXT,
     allowNull: true

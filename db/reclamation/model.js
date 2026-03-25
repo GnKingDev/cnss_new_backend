@@ -8,6 +8,8 @@ const RECLAMATION_TYPES = [
 ];
 const RECLAMATION_STATUSES = ['pending', 'approved', 'rejected', 'processing'];
 
+const CotisationEmployeur = require('../cotisation_employeur/model');
+
 const ReclamationDemande = sequelize.define('ReclamationDemande', {
   id: {
     type: DataTypes.INTEGER,
@@ -80,6 +82,12 @@ const ReclamationDemande = sequelize.define('ReclamationDemande', {
     type: DataTypes.TEXT,
     allowNull: true,
     comment: 'Pour type "autre"'
+  },
+  cotisation_employeur_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    references: { model: CotisationEmployeur, key: 'id' },
+    comment: 'ID de la déclaration concernée (pour annulation)'
   }
 }, {
   tableName: 'reclamation_demandes',
@@ -94,6 +102,7 @@ const ReclamationDemande = sequelize.define('ReclamationDemande', {
 });
 
 ReclamationDemande.belongsTo(Employeur, { foreignKey: 'employeur_id', as: 'employeur' });
+ReclamationDemande.belongsTo(CotisationEmployeur, { foreignKey: 'cotisation_employeur_id', as: 'cotisation' });
 
 ReclamationDemande.RECLAMATION_TYPES = RECLAMATION_TYPES;
 ReclamationDemande.RECLAMATION_STATUSES = RECLAMATION_STATUSES;

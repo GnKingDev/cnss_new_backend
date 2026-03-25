@@ -1,6 +1,6 @@
 const Prefecture = require('./model');
 const Users = require('../users/model');
-const DirgaU = require('../dirga_user/model');
+const DirgaU = require('../admin/model');
 const jwt = require('jsonwebtoken');
 const { Op } = require('sequelize');
 

@@ -160,11 +160,20 @@ function buildSendDataBase(year, periode, options = {}) {
   };
 }
 
+/** Aliases pour mois avec/sans accent (ex. AOÛT / AOUT). */
+const PERIODE_ALIASES = {
+  AOÛT: 'AOUT',
+  DÉCEMBRE: 'DECEMBRE',
+  FÉVRIER: 'FEVRIER'
+};
+
 /**
- * Trouve l'entrée mois par nom (JANVIER, 13e MOIS, etc.).
+ * Trouve l'entrée mois par nom (JANVIER, AOÛT, AOUT, 13e MOIS, etc.).
  */
 function getMonthByName(periodeName) {
-  return MONTHS.find((m) => m.name === periodeName);
+  if (!periodeName) return undefined;
+  const normalized = PERIODE_ALIASES[periodeName] || periodeName;
+  return MONTHS.find((m) => m.name === normalized);
 }
 
 const utility = {

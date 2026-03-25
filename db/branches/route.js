@@ -5,12 +5,10 @@ const Branche = require('./model');
 // GET all branches
 router.get('/', async (req, res) => {
   try {
-    const branches = await Branche.findAll({
-      include: [{ association: 'activity' }]
-    });
-    res.json(branches);
+    const branches = await Branche.findAll({ order: [['name', 'ASC']] });
+    res.json({ success: true, data: branches });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

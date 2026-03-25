@@ -34,7 +34,7 @@ const storage = multer.diskStorage({
     cb(null, base + '-' + unique + ext);
   }
 });
-const upload = multer({ storage });
+const upload = multer({ storage, limits: { fileSize: 15 * 1024 * 1024 } }); // 15 MB max
 
 /** Incrémente les 7 derniers chiffres d'un numéro d'immatriculation. */
 function incrementLastSixDigits(str) {
@@ -62,6 +62,28 @@ function readImageBase64(filePath) {
     console.warn('[utility] Image non trouvée:', filePath, err.message);
   }
   return '';
+}
+
+/** Résout le binaire Chrome local (chrome/) – même approche que ficheEmployePdf. */
+function resolveChromeExecutable() {
+  const chromeDir = path.join(ROOT_DIR, 'chrome');
+  if (!fs.existsSync(chromeDir)) return null;
+  try {
+    const dirs = fs.readdirSync(chromeDir);
+    const macDir = dirs.find((d) => d.startsWith('mac_arm-') || d.startsWith('mac-'));
+    if (macDir) {
+      const base = path.join(chromeDir, macDir, 'chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing');
+      if (fs.existsSync(base)) return base;
+    }
+    const linuxDir = dirs.find((d) => d.startsWith('linux-'));
+    if (linuxDir) {
+      const linuxPath = path.join(chromeDir, linuxDir, 'chrome-linux64', 'chrome');
+      if (fs.existsSync(linuxPath)) return linuxPath;
+    }
+  } catch (err) {
+    console.warn('[utility] Chrome local non trouvé:', err.message);
+  }
+  return null;
 }
 
 /**
@@ -204,15 +226,35 @@ async function getFileAppelCotisation(name, cotisation, facture_name, employeur,
 </body>
 </html>`;
 
+  const executablePath = resolveChromeExecutable();
+  const launchArgs = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--disable-software-rasterizer',
+    '--no-first-run',
+    '--disable-extensions',
+    '--disable-background-networking',
+    '--disable-default-apps',
+    '--disable-sync',
+    '--metrics-recording-only',
+    '--mute-audio',
+    '--no-default-browser-check',
+  ];
+  const launchOpts = { headless: 'new', args: launchArgs };
+  if (executablePath) launchOpts.executablePath = executablePath;
+
   let browser;
   try {
-    browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
+    browser = await puppeteer.launch(launchOpts);
     const page = await browser.newPage();
-    await page.setContent(factureHtml, { waitUntil: 'networkidle0' });
+    await page.setContent(factureHtml, { waitUntil: 'load', timeout: 30000 });
     await page.emulateMediaType('screen');
     const pdfPath = path.join(DOCS_DIR, `${name}.pdf`);
-    await page.pdf({ path: pdfPath, format: 'A4', landscape: true, printBackground: true });
-    return pdfPath;
+    const pdfBuffer = await page.pdf({ format: 'A4', landscape: true, printBackground: true });
+    fs.writeFileSync(pdfPath, pdfBuffer);
+    return { pdfPath, buffer: pdfBuffer };
   } catch (err) {
     console.error('[utility] getFileAppelCotisation:', err.message);
     throw err;

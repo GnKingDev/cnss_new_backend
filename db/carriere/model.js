@@ -52,6 +52,18 @@ const Carer = sequelize.define('carer', {
   responsabilites: {
     type: DataTypes.TEXT,
     allowNull: true
+  },
+  exit_reason: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  notice_period: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  exit_notes: {
+    type: DataTypes.TEXT,
+    allowNull: true
   }
 }, {
   tableName: 'carriers',

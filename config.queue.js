@@ -3,9 +3,11 @@
  * Utilise : utility (util_link, incrementLastSixDigits, generatedNotification), utility2 (mails), db/users/utility (hashPassword, generateUniqueCode), db/XYemployeurs/utility (Paylican)
  */
 require('dotenv').config();
-const Bull = require('bull');
 const { Op } = require('sequelize');
-const { client: redisClient } = require('./redis.connect');
+const { client: redisClient, redisEnabled } = require('./redis.connect');
+
+const redisAvailable = redisEnabled;  // Utilise Redis si REDIS_ENABLED=true
+const Bull = redisAvailable ? require('bull') : null;
 
 const Employe = require('./db/employe/model');
 const Prefecture = require('./db/prefecture/model');
@@ -56,11 +58,13 @@ const paylican_token = employeurUtil?.getPaylicanToken ? () => employeurUtil.get
 const paylican_create_company = employeurUtil?.paylican_create_company || (() => Promise.resolve());
 const addingUserPaylican = employeurUtil?.addingUserPaylican || (() => Promise.resolve());
 
-const queue = new Bull('requestQueue', {
-  createClient: (type) => {
-    if (type === 'bclient') return redisClient.duplicate();
-    return redisClient;
-  },
+let queue = null;
+if (redisAvailable && Bull) {
+  queue = new Bull('requestQueue', {
+    createClient: (type) => {
+      if (type === 'bclient') return redisClient.duplicate();
+      return redisClient;
+    },
   limiter: { max: 1, duration: 10000 },
   settings: {
     lockDuration: 300000,
@@ -76,9 +80,14 @@ const queue = new Bull('requestQueue', {
     attempts: 3,
     backoff: { type: 'exponential', delay: 1000 }
   }
-});
+  });
+}
 
 async function addJob(data) {
+  if (!queue) {
+    console.warn('⚠️ Redis désactivé : job non traité (validation employé/employeur)', JSON.stringify(data?.type || data));
+    return null;
+  }
   const job = await queue.add(
     { data },
     { attempts: 3, backoff: 5000, removeOnComplete: true }
@@ -393,6 +402,7 @@ async function processAffiliationVolontaire(jobData, done) {
 }
 
 function startJob() {
+  if (!queue) return;
   queue.process(async (job, done) => {
     const jobData = job.data?.data || {};
     console.log(`[queue] starting job ${job.id} type=${jobData.type}`);
@@ -420,9 +430,11 @@ function startJob() {
   });
 }
 
-queue.on('completed', (job) => {
-  console.log(`🗑️ Job ${job.id} terminé.`);
-});
+if (queue) {
+  queue.on('completed', (job) => {
+    console.log(`🗑️ Job ${job.id} terminé.`);
+  });
+}
 
 module.exports = {
   addJob,

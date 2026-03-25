@@ -40,8 +40,8 @@ Liste de toutes les variables utilisées dans le projet. Copier dans un fichier 
 
 | Variable    | Défaut / fallback     | Fichier                          | Usage                    |
 |-------------|------------------------|----------------------------------|---------------------------|
-| `JWT_SECRET` | your-secret-key       | db/users/utility.js, db/users/route.js, db/prefecture/utility.js, db/dirga_user/route.js, db/XYemployeurs/utility.js | Secret pour signer les JWT |
-| `key`       | (optionnel)            | db/dirga_user/route.js          | Fallback JWT pour dirga   |
+| `JWT_SECRET` | your-secret-key       | db/users/utility.js, db/users/route.js, db/prefecture/utility.js, db/admin/route.js, db/XYemployeurs/utility.js | Secret pour signer les JWT |
+| `key`       | (optionnel)            | db/admin/route.js               | Fallback JWT pour admin   |
 
 ---
 
@@ -49,7 +49,7 @@ Liste de toutes les variables utilisées dans le projet. Copier dans un fichier 
 
 | Variable        | Défaut              | Fichier                         | Usage                    |
 |-----------------|---------------------|---------------------------------|---------------------------|
-| `OLD_DB_API_URL`| http://192.168.56.128 | utility.js, old.db.js, db/dirga_user/route.js, db/employe/route.js | URL de l’API ancienne BDD |
+| `OLD_DB_API_URL`| http://192.168.56.128 | utility.js, old.db.js, db/admin/route.js, db/employe/route.js | URL de l’API ancienne BDD |
 
 ---
 
