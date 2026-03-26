@@ -125,31 +125,25 @@ async function createDirectPayment({ paymentMethod, payerIdentifier, amount, des
 
 /**
  * @param {Object} params
+ * @param {string} params.paymentMethod   — "OM" ou "MOMO"
+ * @param {string} params.payerIdentifier — Numéro au format 00224XXXXXXXXX
  * @param {number} params.amount
- * @param {string} params.payerNumber                — Numéro au format 00224XXXXXXXXX
- * @param {string[]} [params.allowedPaymentMethods]  — Ex: ["SOUTRA_MONEY","PAYCARD","CARD"]
  * @param {string} [params.description]
  * @param {string} [params.returnUrl]
  * @param {string} [params.cancelUrl]
  * @param {object} [params.metadata]
  */
-async function createRedirectPayment({ amount, payerNumber, allowedPaymentMethods, description, returnUrl, cancelUrl, metadata }) {
+async function createRedirectPayment({ paymentMethod, payerIdentifier, amount, description, returnUrl, cancelUrl, metadata }) {
   const merchantPaymentReference = uuidv4();
 
   const body = {
+    paymentMethod,
     amount,
     countryCode: 'GN',
-    payerNumber,
+    description: description || 'Cotisation CNSS - Affiliation Volontaire',
     merchantPaymentReference,
   };
-
-  if (Array.isArray(allowedPaymentMethods) && allowedPaymentMethods.length > 0) {
-    body.allowedPaymentMethods = allowedPaymentMethods;
-  }
-
-  if (description) {
-    body.description = String(description).slice(0, 255);
-  }
+  if (payerIdentifier) body.payerIdentifier = payerIdentifier;
 
   const finalReturnUrl = returnUrl || DJOMY_RETURN_URL();
   if (finalReturnUrl) body.returnUrl = finalReturnUrl;

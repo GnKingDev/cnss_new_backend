@@ -119,7 +119,7 @@ const AffiliationVolontaire = sequelize.define('affiliation_volontaire', {
   },
   certificat_residence_file: {
     type: DataTypes.STRING,
-    allowNull: true
+    allowNull: true 
   },
   brancheId: {
     type: DataTypes.INTEGER,

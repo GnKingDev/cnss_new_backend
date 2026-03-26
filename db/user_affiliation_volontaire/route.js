@@ -270,14 +270,19 @@ router.get('/declarations', utility.AVToken, async (req, res) => {
     const orderedList = toEnsure.map(({ year, periode }) => byKey.get(key(year, periode))).filter(Boolean);
     const allRows = orderedList.map((d) => {
       const row = d.get ? d.get({ plain: true }) : d;
+      // Utilise le montant propre à la déclaration s'il est défini (> 0), sinon celui de l'affiliation
+      const montant = Number(row.montant_cotisation) > 0 ? Number(row.montant_cotisation) : cotisationAff;
+      const plafond = Number(row.revenu_mensuel) > 0 ? Number(row.revenu_mensuel) : plafondAff;
+      const revAnnuel = Number(row.revenu_annuel) > 0 ? Number(row.revenu_annuel) : revenuAnnuelAff;
+      const revMensuel = Number(row.revenu_mensuel) > 0 ? Number(row.revenu_mensuel) : revenuMensuelAff;
       return {
         id: row.id,
         periode: row.periode,
         year: row.year,
-        montant_cotisation: cotisationAff,
-        montant_soumis_cotisation: plafondAff,
-        revenu_annuel: revenuAnnuelAff,
-        revenu_mensuel: revenuMensuelAff,
+        montant_cotisation: montant,
+        montant_soumis_cotisation: plafond,
+        revenu_annuel: revAnnuel,
+        revenu_mensuel: revMensuel,
         is_paid: row.is_paid,
         createdAt: row.createdAt
       };
@@ -445,12 +450,13 @@ router.post('/lengo_cashin', utility.AVToken, async (req, res) => {
 
 const djomyService = require('../../services/djomy.service');
 
-// Méthodes directes (USSD push sur téléphone, pas de redirection)
+// Méthodes avec notification USSD (téléphone obligatoire)
 const DJOMY_DIRECT_METHODS = ['OM', 'MOMO'];
-// Méthodes avec redirection vers le portail Djomy
-const DJOMY_REDIRECT_METHODS = ['SOUTRA_MONEY', 'PAYCARD', 'CARD'];
+// Méthodes avec redirection portail (téléphone non requis)
+// const DJOMY_REDIRECT_ONLY_METHODS = ['CARD'];
+const DJOMY_REDIRECT_ONLY_METHODS = [];
 // Toutes les méthodes valides
-const DJOMY_ALL_METHODS = [...DJOMY_DIRECT_METHODS, ...DJOMY_REDIRECT_METHODS];
+const DJOMY_ALL_METHODS = [...DJOMY_DIRECT_METHODS /* , ...DJOMY_REDIRECT_ONLY_METHODS */];
 
 /**
  * POST /api/v1/av/auth/djomy_cashin
@@ -474,17 +480,28 @@ router.post('/djomy_cashin', utility.AVToken, async (req, res) => {
     const affiliationVolontaireId = req.user.affiliationVolontaireId;
     const { phone, amount, declarationId, paymentMethod, returnUrl, cancelUrl } = req.body;
 
-    const isDirect = paymentMethod && DJOMY_DIRECT_METHODS.includes(paymentMethod);
-
-    // Validation téléphone (obligatoire uniquement pour paiement direct OM/MOMO)
-    if (isDirect && (!phone || !/^00224\d{9}$/.test((phone || '').trim()))) {
-      return res.status(400).json({ message: 'Numéro de téléphone invalide. Format attendu : 00224XXXXXXXXX (14 chiffres)' });
-    }
-
-    // Validation paymentMethod si fournie
-    if (paymentMethod && !DJOMY_ALL_METHODS.includes(paymentMethod)) {
+    // Validation paymentMethod
+    if (!paymentMethod || !DJOMY_ALL_METHODS.includes(paymentMethod)) {
       return res.status(400).json({ message: `Méthode de paiement invalide. Valeurs acceptées : ${DJOMY_ALL_METHODS.join(', ')}` });
     }
+
+    const isDirectMethod = DJOMY_DIRECT_METHODS.includes(paymentMethod);
+    const isRedirectOnly = DJOMY_REDIRECT_ONLY_METHODS.includes(paymentMethod);
+
+    // Normalisation du téléphone — obligatoire pour OM/MOMO, optionnel pour CARD
+    let normalizedPhone = '';
+    if (!isRedirectOnly) {
+      const rawPhone = (phone || '').trim().replace(/\s/g, '');
+      if (/^\d{9}$/.test(rawPhone)) {
+        normalizedPhone = '00224' + rawPhone;
+      } else if (/^00224\d{9}$/.test(rawPhone)) {
+        normalizedPhone = rawPhone;
+      } else {
+        return res.status(400).json({ message: 'Numéro de téléphone invalide. Format attendu : 9 chiffres (ex: 623707722)' });
+      }
+    }
+
+    const isDirect = isDirectMethod && !isRedirectOnly;
 
     // Vérifier config Djomy
     if (!djomyService.isConfigured()) {
@@ -515,26 +532,28 @@ router.post('/djomy_cashin', utility.AVToken, async (req, res) => {
     const description = `Cotisation CNSS AV - Déclaration #${declarationId}`;
     let result;
 
-    if (isDirect) {
-      // ── Paiement direct OM / MOMO ──
+    const hasReturnUrl = !!(returnUrl || process.env.DJOMY_RETURN_URL);
+
+    if (!isRedirectOnly && isDirect && !hasReturnUrl) {
+      // ── Paiement direct OM / MOMO (notification USSD, pas de redirection) ──
       result = await djomyService.createDirectPayment({
         paymentMethod,
-        payerIdentifier: phone.trim(),
+        payerIdentifier: normalizedPhone,
         amount: Math.round(amountVal),
         description
       });
     } else {
-      // ── Paiement avec redirection ──
-      const allowedMethods = paymentMethod ? [paymentMethod] : undefined;
-      result = await djomyService.createRedirectPayment({
+      // ── Paiement avec redirection (CARD toujours, OM/MOMO si returnUrl configuré) ──
+      const body = {
+        paymentMethod,
         amount: Math.round(amountVal),
-        payerNumber: phone.trim(),
-        allowedPaymentMethods: allowedMethods,
         description,
         returnUrl,
         cancelUrl,
         metadata: { declarationId, affiliationVolontaireId }
-      });
+      };
+      if (normalizedPhone) body.payerIdentifier = normalizedPhone;
+      result = await djomyService.createRedirectPayment(body);
     }
 
     // Sauvegarder en BDD
