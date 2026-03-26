@@ -15,7 +15,7 @@ Exécuter `require('./db/biometrie/migrate')()` pour créer/mettre à jour les t
 ## Routes (base : `/api/v1/biometrie`)
 
 | Méthode | Route | Description |
-|--------|--------|-------------|
+|--------|--------|------------- 
 | GET | `/stats` | Stats : total_demandes, en_attente, en_traitement, termines, rejetes, a_enroller |
 | GET | `/demandes` | Liste (recherche, type, statut, page, limit). Défaut 5 par page. |
 | GET | `/demandes/:id` | Détail (id numérique ou référence BIO-YYYY-NNN) |
@@ -29,5 +29,5 @@ Toutes les routes sont protégées par **EmployeurToken**.
 ## Types et statuts
 
 - **Types** : `enrolement`, `mise_a_jour`, `renouvellement`, `remplacement`, `correction`, `rendez_vous`
-- **Statuts** : `en_attente`, `planifié`, `en_traitement`, `terminé`, `rejeté`
-- **biometric_status** (employé) : `actif`, `en_attente`, `expiré`, `nouveau`
+- **Statuts** : `en_attente`, `planifié`, `en_traitement`, `terminé`, `rejeté` 
+- **biometric_status** (employé) : `actif`, `en_attente`, `expiré`, `nouveau` 

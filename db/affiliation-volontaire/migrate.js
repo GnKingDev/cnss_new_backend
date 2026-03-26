@@ -8,5 +8,6 @@ const migrate = async () => {
     console.error('❌ Error migrating AffiliationVolontaire table:', error);
   }
 };
+migrate()
 
 module.exports = migrate;

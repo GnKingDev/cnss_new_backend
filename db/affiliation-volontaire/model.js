@@ -35,13 +35,11 @@ const AffiliationVolontaire = sequelize.define('affiliation_volontaire', {
   },
   phone_number: {
     type: DataTypes.STRING,
-    allowNull: true,
-    unique: true
+    allowNull: true
   },
   email: {
     type: DataTypes.STRING,
-    allowNull: true,
-    unique: true
+    allowNull: true
   },
   profession: {
     type: DataTypes.STRING,
@@ -117,8 +115,7 @@ const AffiliationVolontaire = sequelize.define('affiliation_volontaire', {
   },
   no_immatriculation: {
     type: DataTypes.STRING,
-    allowNull: true,
-    unique: true
+    allowNull: true
   },
   certificat_residence_file: {
     type: DataTypes.STRING,

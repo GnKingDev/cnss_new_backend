@@ -153,6 +153,60 @@ app.get('/api/v1/docsx/:filename', (req, res) => {
   res.sendFile(filePath);
 });
 
+// ============================================
+// DJOMY WEBHOOK — endpoint public (pas d'auth), appelé par Djomy pour notifier le statut du paiement
+// ============================================
+const DeclarationAffiliationVolontaireModel = require('./db/declaration_affiliation_volontaire/model');
+
+app.post('/api/v1/webhook/djomy', async (req, res) => {
+  try {
+    const { data } = req.body || {};
+    if (!data) return res.status(400).json({ received: false, message: 'Body invalide' });
+
+    const { transactionId, status } = data;
+    console.log(`[Djomy webhook] Transaction: ${transactionId}, Statut: ${status}`);
+
+    if (!transactionId) return res.status(400).json({ received: false, message: 'transactionId manquant' });
+
+    // Chercher la déclaration par transactionId
+    const decl = await DeclarationAffiliationVolontaireModel.findOne({
+      where: { djomy_transaction_id: transactionId }
+    });
+
+    if (!decl) {
+      console.warn(`[Djomy webhook] Déclaration introuvable pour transactionId: ${transactionId}`);
+      return res.status(200).json({ received: true });
+    }
+
+    // Mettre à jour le statut Djomy
+    const updates = { djomy_status: status };
+
+    switch (status) {
+      case 'SUCCESS':
+      case 'CAPTURED':
+        // Paiement réussi — marquer comme payé (idempotent)
+        if (!decl.is_paid) {
+          updates.is_paid = true;
+          console.log(`[Djomy webhook] Déclaration #${decl.id} marquée payée (${status})`);
+        }
+        break;
+      case 'FAILED':
+        console.log(`[Djomy webhook] Paiement échoué pour déclaration #${decl.id}`);
+        break;
+      default:
+        // CREATED, PENDING, AUTHORIZED — juste mettre à jour le statut
+        console.log(`[Djomy webhook] Déclaration #${decl.id} statut mis à jour: ${status}`);
+        break;
+    }
+
+    await decl.update(updates);
+    return res.status(200).json({ received: true });
+  } catch (err) {
+    console.error('[Djomy webhook] Erreur:', err);
+    return res.status(200).json({ received: true });
+  }
+});
+
 // Basic route
 app.get('/', (req, res) => {
   res.json({ 
@@ -179,11 +233,16 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Sync affiliation_volontaire table then start server
+// Sync affiliation_volontaire — alter désactivé (table à 64 index max atteint)
 const AffiliationVolontaireModel = require('./db/affiliation-volontaire/model');
-AffiliationVolontaireModel.sync({ alter: true })
+AffiliationVolontaireModel.sync()
   .then(() => console.log('✅ affiliation_volontaire table synced'))
   .catch((err) => console.error('❌ affiliation_volontaire sync error:', err.message));
+
+// Sync declaration_affiliation_volontaire (ajout colonnes Djomy)
+DeclarationAffiliationVolontaireModel.sync({ alter: true })
+  .then(() => console.log('✅ declaration_affiliation_volontaire table synced'))
+  .catch((err) => console.error('❌ declaration_affiliation_volontaire sync error:', err.message));
 
 // Sync reclamation_demandes (ajout colonne cotisation_employeur_id)
 const ReclamationDemandeModel = require('./db/reclamation/model');

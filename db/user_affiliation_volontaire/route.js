@@ -328,6 +328,28 @@ router.patch('/declarations/:id/pay', utility.AVToken, async (req, res) => {
   }
 });
 
+// GET declarations/:id/status — vérification du statut de paiement (polling toutes les 2s côté frontend)
+router.get('/declarations/:id/status', utility.AVToken, async (req, res) => {
+  try {
+    const affiliationVolontaireId = req.user.affiliationVolontaireId;
+    const decl = await DeclarationAffiliationVolontaire.findOne({
+      where: { id: req.params.id, affiliationVolontaireId }
+    });
+    if (!decl) return res.status(404).json({ message: 'Déclaration non trouvée' });
+    const row = decl.get ? decl.get({ plain: true }) : decl;
+    return res.status(200).json({
+      id: row.id,
+      is_paid: row.is_paid,
+      djomy_status: row.djomy_status,
+      djomy_transaction_id: row.djomy_transaction_id,
+      payment_method: row.payment_method
+    });
+  } catch (error) {
+    console.error('[AV GET declarations status]', error);
+    return res.status(500).json({ message: 'Erreur interne du serveur' });
+  }
+});
+
 // ============================================
 // 2d. LENGO PAY – Génération URL de paiement (télédéclaration AV)
 // ============================================
@@ -414,6 +436,129 @@ router.post('/lengo_cashin', utility.AVToken, async (req, res) => {
     }
     console.error('[AV] Lengo cashin error:', err);
     return res.status(500).json({ message: 'Erreur lors de l\'initiation du paiement Lengo Pay' });
+  }
+});
+
+// ============================================
+// 2e. DJOMY – Paiement direct (OM/MOMO) & redirection (autres méthodes)
+// ============================================
+
+const djomyService = require('../../services/djomy.service');
+
+// Méthodes directes (USSD push sur téléphone, pas de redirection)
+const DJOMY_DIRECT_METHODS = ['OM', 'MOMO'];
+// Méthodes avec redirection vers le portail Djomy
+const DJOMY_REDIRECT_METHODS = ['SOUTRA_MONEY', 'PAYCARD', 'CARD'];
+// Toutes les méthodes valides
+const DJOMY_ALL_METHODS = [...DJOMY_DIRECT_METHODS, ...DJOMY_REDIRECT_METHODS];
+
+/**
+ * POST /api/v1/av/auth/djomy_cashin
+ * Initie un paiement via Djomy.
+ *
+ * — Si paymentMethod = "OM" ou "MOMO" → paiement direct (notification USSD sur le téléphone)
+ * — Si paymentMethod = "SOUTRA_MONEY", "PAYCARD" ou "CARD" → redirection vers le portail Djomy
+ * — Si paymentMethod absent → redirection avec toutes les méthodes affichées
+ *
+ * Body: {
+ *   phone: "00224XXXXXXXXX",          — numéro du payeur (obligatoire)
+ *   declarationId: number,             — ID de la déclaration (obligatoire)
+ *   paymentMethod?: string,            — "OM","MOMO","SOUTRA_MONEY","PAYCARD","CARD"
+ *   amount?: number,                   — montant (optionnel, déduit de la déclaration)
+ *   returnUrl?: string,                — URL de retour https (pour redirection)
+ *   cancelUrl?: string                 — URL d'annulation https (pour redirection)
+ * }
+ */
+router.post('/djomy_cashin', utility.AVToken, async (req, res) => {
+  try {
+    const affiliationVolontaireId = req.user.affiliationVolontaireId;
+    const { phone, amount, declarationId, paymentMethod, returnUrl, cancelUrl } = req.body;
+
+    const isDirect = paymentMethod && DJOMY_DIRECT_METHODS.includes(paymentMethod);
+
+    // Validation téléphone (obligatoire uniquement pour paiement direct OM/MOMO)
+    if (isDirect && (!phone || !/^00224\d{9}$/.test((phone || '').trim()))) {
+      return res.status(400).json({ message: 'Numéro de téléphone invalide. Format attendu : 00224XXXXXXXXX (14 chiffres)' });
+    }
+
+    // Validation paymentMethod si fournie
+    if (paymentMethod && !DJOMY_ALL_METHODS.includes(paymentMethod)) {
+      return res.status(400).json({ message: `Méthode de paiement invalide. Valeurs acceptées : ${DJOMY_ALL_METHODS.join(', ')}` });
+    }
+
+    // Vérifier config Djomy
+    if (!djomyService.isConfigured()) {
+      return res.status(503).json({ message: 'Paiement Djomy non configuré (DJOMY_CLIENT_ID, DJOMY_CLIENT_SECRET)' });
+    }
+
+    // Déclaration obligatoire
+    if (declarationId == null) {
+      return res.status(400).json({ message: 'declarationId est obligatoire' });
+    }
+
+    const decl = await DeclarationAffiliationVolontaire.findOne({
+      where: { id: declarationId, affiliationVolontaireId }
+    });
+    if (!decl) return res.status(404).json({ message: 'Déclaration non trouvée' });
+    if (decl.is_paid) return res.status(400).json({ message: 'Cette déclaration est déjà payée' });
+
+    // Résoudre le montant
+    let amountVal = amount != null ? (typeof amount === 'number' ? amount : parseFloat(String(amount).trim())) : NaN;
+    if (!Number.isFinite(amountVal) || amountVal <= 0) {
+      const affiliation = await AffiliationVolontaire.findByPk(affiliationVolontaireId);
+      amountVal = Number(affiliation?.cotisation) || Number(decl.montant_cotisation) || 0;
+    }
+    if (!Number.isFinite(amountVal) || amountVal <= 0) {
+      return res.status(400).json({ message: 'Montant invalide' });
+    }
+
+    const description = `Cotisation CNSS AV - Déclaration #${declarationId}`;
+    let result;
+
+    if (isDirect) {
+      // ── Paiement direct OM / MOMO ──
+      result = await djomyService.createDirectPayment({
+        paymentMethod,
+        payerIdentifier: phone.trim(),
+        amount: Math.round(amountVal),
+        description
+      });
+    } else {
+      // ── Paiement avec redirection ──
+      const allowedMethods = paymentMethod ? [paymentMethod] : undefined;
+      result = await djomyService.createRedirectPayment({
+        amount: Math.round(amountVal),
+        payerNumber: phone.trim(),
+        allowedPaymentMethods: allowedMethods,
+        description,
+        returnUrl,
+        cancelUrl,
+        metadata: { declarationId, affiliationVolontaireId }
+      });
+    }
+
+    // Sauvegarder en BDD
+    await decl.update({
+      djomy_transaction_id: result.transactionId,
+      djomy_merchant_ref: result.merchantPaymentReference,
+      djomy_status: result.status || 'CREATED',
+      payment_method: paymentMethod ? `DJOMY_${paymentMethod}` : 'DJOMY'
+    });
+
+    return res.status(200).json({
+      message: isDirect
+        ? 'Paiement initié. Validez la transaction sur votre téléphone.'
+        : 'Redirection vers le portail de paiement Djomy',
+      transactionId: result.transactionId,
+      status: result.status,
+      redirectUrl: result.redirectUrl || null,
+      paymentUrl: result.paymentUrl || null,
+      merchantPaymentReference: result.merchantPaymentReference
+    });
+  } catch (err) {
+    console.error('[AV] Djomy cashin error:', err);
+    const msg = err.message || 'Erreur lors de l\'initiation du paiement Djomy';
+    return res.status(500).json({ message: msg });
   }
 });
 

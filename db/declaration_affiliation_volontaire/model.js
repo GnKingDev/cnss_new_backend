@@ -47,6 +47,30 @@ const DeclarationAffiliationVolontaire = sequelize.define('declaration_affiliati
     type: DataTypes.BOOLEAN,
     allowNull: false,
     defaultValue: false
+  },
+  djomy_transaction_id: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: null,
+    comment: 'Transaction ID retourné par Djomy après initiation du paiement'
+  },
+  djomy_merchant_ref: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: null,
+    comment: 'merchantPaymentReference envoyé à Djomy (UUID)'
+  },
+  djomy_status: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: null,
+    comment: 'Dernier statut Djomy reçu (CREATED, PENDING, SUCCESS, CAPTURED, FAILED)'
+  },
+  payment_method: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: null,
+    comment: 'Méthode de paiement utilisée (DJOMY_OM, DJOMY_MOMO, LENGO, etc.)'
   }
 }, {
   tableName: 'declaration_affiliation_volontaire',
