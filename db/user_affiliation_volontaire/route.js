@@ -235,6 +235,143 @@ router.get('/affiliation', utility.AVToken, async (req, res) => {
 });
 
 // ============================================
+// 2b-bis. DOCUMENTS — pièces jointes de l'affilié connecté
+// ============================================
+
+// GET documents — liste paginée des documents de l'affilié (CNI, photo, certificat de résidence)
+router.get('/documents', utility.AVToken, async (req, res) => {
+  try {
+    const affiliationVolontaireId = req.user.affiliationVolontaireId;
+    if (!affiliationVolontaireId) {
+      return res.status(403).json({ message: 'Affiliation non associée à ce compte' });
+    }
+
+    const affiliation = await AffiliationVolontaire.findByPk(affiliationVolontaireId, {
+      attributes: ['id', 'cni_file_path', 'requester_picture', 'certificat_residence_file']
+    });
+    if (!affiliation) {
+      return res.status(404).json({ message: 'Affiliation volontaire non trouvée' });
+    }
+
+    const raw = affiliation.get ? affiliation.get({ plain: true }) : affiliation;
+
+    // Construction de la liste des documents disponibles
+    const allDocs = [
+      { code: 'CNI', label: "Carte Nationale d'Identité", file_path: raw.cni_file_path },
+      { code: 'PHOTO', label: 'Photo du demandeur', file_path: raw.requester_picture },
+      { code: 'CERTIFICAT_RESIDENCE', label: 'Certificat de résidence', file_path: raw.certificat_residence_file }
+    ]
+      .filter((d) => !!d.file_path)
+      .map((d, index) => ({
+        id: index + 1,
+        code: d.code,
+        label: d.label,
+        url: d.file_path,
+        type: 'file'
+      }));
+
+    // Pagination
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const pageSize = Math.min(50, Math.max(1, parseInt(req.query.pageSize, 10) || 10));
+    const totalItems = allDocs.length;
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+    const currentPage = Math.min(page, totalPages);
+    const data = allDocs.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+    return res.status(200).json({ data, totalItems, totalPages, currentPage, pageSize });
+  } catch (error) {
+    console.error('[AV GET documents]', error);
+    return res.status(500).json({ message: 'Erreur interne du serveur' });
+  }
+});
+
+// ============================================
+// 2b-ter. QUITTANCES — quittances de paiement de l'affilié
+// ============================================
+
+const QuittanceAffiliationVolontaire = require('../quittance_affiliation_volontaire/model');
+
+// GET quittances — liste paginée des quittances de l'affilié connecté
+router.get('/quittances', utility.AVToken, async (req, res) => {
+  try {
+    const affiliationVolontaireId = req.user.affiliationVolontaireId;
+    if (!affiliationVolontaireId) {
+      return res.status(403).json({ message: 'Affiliation non associée à ce compte' });
+    }
+
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const pageSize = Math.min(50, Math.max(1, parseInt(req.query.pageSize, 10) || 10));
+    const offset = (page - 1) * pageSize;
+
+    const { count, rows } = await QuittanceAffiliationVolontaire.findAndCountAll({
+      where: { affiliationVolontaireId },
+      order: [['createdAt', 'DESC']],
+      limit: pageSize,
+      offset
+    });
+
+    const data = rows.map((q) => {
+      const r = q.get ? q.get({ plain: true }) : q;
+      return {
+        id: r.id,
+        reference: r.reference,
+        periode: r.periode,
+        year: r.year,
+        montant: r.montant,
+        payment_method: r.payment_method,
+        djomy_transaction_id: r.djomy_transaction_id,
+        doc_path: r.doc_path,
+        createdAt: r.createdAt
+      };
+    });
+
+    return res.status(200).json({
+      data,
+      totalItems: count,
+      totalPages: Math.max(1, Math.ceil(count / pageSize)),
+      currentPage: page,
+      pageSize
+    });
+  } catch (error) {
+    console.error('[AV GET quittances]', error);
+    return res.status(500).json({ message: 'Erreur interne du serveur' });
+  }
+});
+
+// GET quittances/:id/download — génère et retourne le PDF à la volée (rien sur disque)
+router.get('/quittances/:id/download', utility.AVToken, async (req, res) => {
+  try {
+    const affiliationVolontaireId = req.user.affiliationVolontaireId;
+    const quittance = await QuittanceAffiliationVolontaire.findOne({
+      where: { id: req.params.id, affiliationVolontaireId }
+    });
+    if (!quittance) return res.status(404).json({ message: 'Quittance non trouvée' });
+
+    const declaration = await DeclarationAffiliationVolontaire.findByPk(quittance.declarationId);
+    if (!declaration) return res.status(404).json({ message: 'Déclaration non trouvée' });
+
+    const affiliation = await AffiliationVolontaire.findByPk(affiliationVolontaireId);
+    if (!affiliation) return res.status(404).json({ message: 'Affiliation non trouvée' });
+
+    const { generateQuittanceAv } = require('../../services/quittance-av.service');
+    const declRaw = declaration.get ? declaration.get({ plain: true }) : declaration;
+    const avRaw   = affiliation.get ? affiliation.get({ plain: true }) : affiliation;
+
+    const pdfBuffer = await generateQuittanceAv(declRaw, avRaw, quittance.secret_code);
+
+    const filename = `quittance-${quittance.reference || quittance.id}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.setHeader('Content-Security-Policy', 'frame-ancestors *');
+    res.setHeader('Content-Length', pdfBuffer.length);
+    return res.send(pdfBuffer);
+  } catch (error) {
+    console.error('[AV GET quittance download]', error);
+    return res.status(500).json({ message: 'Erreur lors de la génération du PDF' });
+  }
+});
+
+// ============================================
 // 2c. TÉLÉDÉCLARATION — une ligne par mois par affilié (génération automatique)
 // ============================================
 
@@ -319,6 +456,13 @@ router.patch('/declarations/:id/pay', utility.AVToken, async (req, res) => {
     });
     if (!decl) return res.status(404).json({ message: 'Déclaration non trouvée' });
     await decl.update({ is_paid: true });
+
+    // Générer la quittance en arrière-plan
+    const { generateQuittanceForDeclaration } = require('../../db/quittance_affiliation_volontaire/generate');
+    generateQuittanceForDeclaration(decl.id).catch((e) =>
+      console.error('[AV pay] Erreur génération quittance:', e.message)
+    );
+
     const row = decl.get ? decl.get({ plain: true }) : decl;
     return res.status(200).json({
       id: row.id,

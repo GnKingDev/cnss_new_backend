@@ -9,6 +9,19 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ── Swagger UI (documentation API) ──
+try {
+  const swaggerUi = require('swagger-ui-express');
+  const swaggerSpec = require('./swagger/spec');
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+    customSiteTitle: 'CNSS AV — API Docs',
+    customCss: '.swagger-ui .topbar { display: none }',
+  }));
+  console.log('📖 Swagger UI disponible sur /api-docs');
+} catch {
+  // swagger-ui-express pas encore installé — lance : npm install swagger-ui-express
+}
+
 // Dossier des PDFs (factures, quittances, etc.) — contenu servi sous /api/v1/docsx/
 const docPath = path.join(__dirname, 'document/docs');
 // Photos / avatars employés — GET /uploads/xxx
@@ -200,6 +213,15 @@ app.post('/api/v1/webhook/djomy', async (req, res) => {
     }
 
     await decl.update(updates);
+
+    // Générer la quittance si paiement confirmé
+    if (updates.is_paid) {
+      const { generateQuittanceForDeclaration } = require('./db/quittance_affiliation_volontaire/generate');
+      generateQuittanceForDeclaration(decl.id).catch((e) =>
+        console.error('[Djomy webhook] Erreur génération quittance:', e.message)
+      );
+    }
+
     return res.status(200).json({ received: true });
   } catch (err) {
     console.error('[Djomy webhook] Erreur:', err);
@@ -243,6 +265,12 @@ AffiliationVolontaireModel.sync()
 DeclarationAffiliationVolontaireModel.sync({ alter: true })
   .then(() => console.log('✅ declaration_affiliation_volontaire table synced'))
   .catch((err) => console.error('❌ declaration_affiliation_volontaire sync error:', err.message));
+
+// Sync quittance_affiliation_volontaire
+const QuittanceAvModel = require('./db/quittance_affiliation_volontaire/model');
+QuittanceAvModel.sync({ alter: true })
+  .then(() => console.log('✅ quittance_affiliation_volontaire table synced'))
+  .catch((err) => console.error('❌ quittance_affiliation_volontaire sync error:', err.message));
 
 // Sync reclamation_demandes (ajout colonne cotisation_employeur_id)
 const ReclamationDemandeModel = require('./db/reclamation/model');
