@@ -489,7 +489,15 @@ router.get('/bo/demandes', async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      data: rows.map((d) => ({ ...formatItem(d), employeur: (d.toJSON ? d.toJSON() : d).employeur || null })),
+      data: rows.map((d) => {
+        const dJson = d.toJSON ? d.toJSON() : d;
+        const item = { ...formatItem(dJson), employeur: dJson.employeur || null };
+        // Pour le BO : document_url pointe vers /uploads (pas besoin d'auth)
+        if (dJson.document_path) {
+          item.document_url = `/uploads/reclamations/${path.basename(dJson.document_path)}`;
+        }
+        return item;
+      }),
       pagination: { page, limit, total: count, totalPages: Math.ceil(count / limit) },
     });
   } catch (err) {
@@ -511,7 +519,19 @@ router.get('/bo/demandes/:id', async (req, res) => {
     });
     if (!d) return res.status(404).json({ success: false, message: 'Réclamation introuvable' });
     const dJson = d.toJSON ? d.toJSON() : d;
-    return res.status(200).json({ success: true, data: { ...formatItem(dJson), employeur: dJson.employeur, description: dJson.description, documents_complementaires: dJson.documents_complementaires, cotisation_employeur_id: dJson.cotisation_employeur_id, cotisation: dJson.cotisation || null } });
+    const boItem = {
+      ...formatItem(dJson),
+      employeur: dJson.employeur,
+      description: dJson.description,
+      documents_complementaires: dJson.documents_complementaires,
+      cotisation_employeur_id: dJson.cotisation_employeur_id,
+      cotisation: dJson.cotisation || null,
+    };
+    // Pour le BO : document_url pointe vers /uploads (pas besoin d'auth employeur)
+    if (dJson.document_path) {
+      boItem.document_url = `/uploads/reclamations/${path.basename(dJson.document_path)}`;
+    }
+    return res.status(200).json({ success: true, data: boItem });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
