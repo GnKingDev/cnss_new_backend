@@ -40,7 +40,9 @@ const isMultipartReclamation = (req) => req.method === 'POST' && req.originalUrl
   req.headers['content-type'] && String(req.headers['content-type']).startsWith('multipart/form-data');
 const isMultipartQuitus = (req) => req.method === 'POST' && req.originalUrl.includes('/quitus/demandes') &&
   req.headers['content-type'] && String(req.headers['content-type']).startsWith('multipart/form-data');
-const skipBodyParse = (req) => isMultipartFamille(req) || isMultipartPrestation(req) || isMultipartReclamation(req) || isMultipartQuitus(req);
+const isMultipartAffiliationVolontaire = (req) => req.method === 'POST' && req.originalUrl.includes('/request_affiliation_volontaire') &&
+  req.headers['content-type'] && String(req.headers['content-type']).startsWith('multipart/form-data');
+const skipBodyParse = (req) => isMultipartFamille(req) || isMultipartPrestation(req) || isMultipartReclamation(req) || isMultipartQuitus(req) || isMultipartAffiliationVolontaire(req);
 app.use((req, res, next) => {
   if (skipBodyParse(req)) return next();
   bodyParser.json({ limit: '10mb' })(req, res, next);
