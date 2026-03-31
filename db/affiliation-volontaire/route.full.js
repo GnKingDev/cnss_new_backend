@@ -45,6 +45,24 @@ try {
 } catch {
   upload = null;
 }
+
+// Fallback multer si ../../utility non disponible (limite 10 MB par fichier)
+if (!upload) {
+  const multer = require('multer');
+  const path = require('path');
+  const fs = require('fs');
+  const uploadDir = path.join(__dirname, '../../uploads');
+  if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+  const storage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, uploadDir),
+    filename: (req, file, cb) => {
+      const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
+      cb(null, `av-${file.fieldname}-${unique}${path.extname(file.originalname)}`);
+    }
+  });
+  upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024, files: 3 } });
+  console.log('[AV] Multer fallback initialisé (limite 10 MB/fichier, max 3 fichiers)');
+}
 try {
   addJob = require('../../config.queue').addJob;
 } catch {
@@ -187,6 +205,29 @@ router.post('/request_affiliation_volontaire', uploadMiddleware, async (req, res
     });
 
   } catch (error) {
+    // 413 — Fichier trop volumineux (Multer)
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      console.error('[AV_REQUEST] ❌ 413 Fichier trop volumineux:', error.field, error.message);
+      return res.status(413).json({
+        success: false,
+        message: `Fichier trop volumineux (champ: ${error.field || 'inconnu'}). Taille maximale autorisée dépassée.`
+      });
+    }
+    if (error.code === 'LIMIT_FILE_COUNT') {
+      console.error('[AV_REQUEST] ❌ 413 Trop de fichiers:', error.message);
+      return res.status(413).json({
+        success: false,
+        message: 'Trop de fichiers envoyés.'
+      });
+    }
+    if (error.code === 'LIMIT_UNEXPECTED_FILE') {
+      console.error('[AV_REQUEST] ❌ 400 Champ fichier inattendu:', error.field);
+      return res.status(400).json({
+        success: false,
+        message: `Champ fichier non autorisé : "${error.field}". Champs acceptés : cni, requester_picture, certificat_residence`
+      });
+    }
+
     // Erreur Sequelize : extraire les messages de validation
     if (error.name === 'SequelizeValidationError' || error.name === 'SequelizeUniqueConstraintError') {
       const details = (error.errors || []).map((e) => `${e.path}: ${e.message}`).join(', ');
@@ -196,6 +237,7 @@ router.post('/request_affiliation_volontaire', uploadMiddleware, async (req, res
         message: `Erreur de validation : ${details || error.message}`
       });
     }
+
     console.error('[AV_REQUEST] ❌ Erreur inattendue:', error.name, error.message);
     console.error(error.stack);
     return res.status(500).json({
