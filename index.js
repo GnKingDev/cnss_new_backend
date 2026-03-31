@@ -84,6 +84,7 @@ const succursaleRoutes = require('./db/succursale/route');
 const adminRoutes = require('./db/admin/route');
 const adhesionRoutes = require('./db/adhesion/route');
 const affiliationVolontaireRoutes = require('./db/affiliation-volontaire/route');
+const { affiliation_volontaire_router: affiliationVolontaireFullRoutes } = require('./db/affiliation-volontaire/route.full');
 const userAffiliationVolontaireRoutes = require('./db/user_affiliation_volontaire/route');
 const prestationRoutes = require('./db/prestation/route');
 const biometrieRoutes = require('./db/biometrie/route');
@@ -136,7 +137,9 @@ app.use('/paiements', paiementRoutes.router || paiementRoutes);
 app.use('/demandes', demandeRoutes);
 app.use('/quittances', quittanceRoutes);
 app.use('/adhesions', adhesionRoutes);
-app.use('/affiliation-volontaire', affiliationVolontaireRoutes);
+app.use('/affiliation-volontaire', affiliationVolontaireFullRoutes); // route.full.js — simulation + request_affiliation_volontaire
+app.use('/affiliation-volontaire', affiliationVolontaireRoutes);    // route.js — CRUD admin
+app.use('/api/affiliations-volontaires', affiliationVolontaireFullRoutes);
 app.use('/api/affiliations-volontaires', affiliationVolontaireRoutes);
 app.use('/api/v1/av/auth', userAffiliationVolontaireRoutes);
 app.use('/api/v1/prestations', prestationRoutes);
