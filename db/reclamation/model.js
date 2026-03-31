@@ -4,7 +4,8 @@ const Employeur = require('../XYemployeurs/model');
 
 const RECLAMATION_TYPES = [
   'quittance', 'notification', 'facture', 'certificat', 'annulation',
-  'rectification', 'correction_naissance', 'correction_genre', 'autre'
+  'rectification', 'correction_naissance', 'correction_genre',
+  'changement_raison_sociale', 'autre'
 ];
 const RECLAMATION_STATUSES = ['pending', 'approved', 'rejected', 'processing'];
 

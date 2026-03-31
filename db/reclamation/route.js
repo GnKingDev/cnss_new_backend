@@ -99,6 +99,7 @@ function defaultLibelle(type) {
     rectification: "Rectification déclaration",
     correction_naissance: "Correction date naissance",
     correction_genre: "Correction de genre",
+    changement_raison_sociale: "Changement de raison sociale",
     autre: "Autre réclamation"
   };
   return map[type] || `Réclamation ${type}`;
@@ -320,6 +321,15 @@ router.post('/demandes', EmployeurToken, maybeUpload, async (req, res) => {
         return res.status(400).json({ message: 'Extrait de naissance obligatoire pour la correction de genre' });
       }
     }
+    if (type === 'changement_raison_sociale') {
+      if (!body.description || !body.description.trim()) {
+        return res.status(400).json({ message: 'Nouvelle raison sociale requise' });
+      }
+      const rccmDoc = req.files && req.files.document_principal && req.files.document_principal[0];
+      if (!rccmDoc || !rccmDoc.filename) {
+        return res.status(400).json({ message: 'Document RCCM obligatoire pour le changement de raison sociale' });
+      }
+    }
 
     const reference = await getNextReference(employeurId);
     let libelle = body.libelle || defaultLibelle(type);
@@ -328,7 +338,11 @@ router.post('/demandes', EmployeurToken, maybeUpload, async (req, res) => {
       const label = monthInfo ? (monthInfo.name.includes('e MOIS') ? monthInfo.name : monthInfo.name.charAt(0) + monthInfo.name.slice(1).toLowerCase()) : body.mois;
       libelle = `Annulation déclaration - ${label} ${body.annee}`;
     }
+    if (type === 'changement_raison_sociale' && body.description) {
+      libelle = `Changement raison sociale → ${body.description.trim().substring(0, 60)}`;
+    }
 
+    const TYPES_WITH_DESCRIPTION = ['autre', 'correction_naissance', 'correction_genre', 'changement_raison_sociale'];
     const payload = {
       employeur_id: employeurId,
       reference,
@@ -339,7 +353,7 @@ router.post('/demandes', EmployeurToken, maybeUpload, async (req, res) => {
       mois: (type === 'quittance' || type === 'facture' || type === 'annulation') ? (body.mois || null) : null,
       annee: (type === 'quittance' || type === 'facture' || type === 'annulation') ? (body.annee || null) : null,
       periode_verifiee: type === 'quittance' || type === 'facture' ? !!body.periode_verifiee : null,
-      description: (type === 'autre' || type === 'correction_naissance' || type === 'correction_genre') ? (body.description || null) : null,
+      description: TYPES_WITH_DESCRIPTION.includes(type) ? (body.description || null) : null,
       cotisation_employeur_id: (type === 'annulation' || type === 'quittance' || type === 'facture') && body.cotisation_employeur_id ? parseInt(body.cotisation_employeur_id, 10) || null : null
     };
 

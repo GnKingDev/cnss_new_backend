@@ -65,6 +65,7 @@ Le token de session est valide jusqu'à déconnexion explicite (\`signOut\`) ou 
     { url: 'https://av.cnss.gov.gn', description: 'Production' }
   ],
   tags: [
+    { name: '0. Référentiels',       description: 'Données de référence publiques — préfectures et branches d\'activité (sans authentification)' },
     { name: '1. Demande',            description: 'Simulation de cotisation et soumission d\'une demande d\'affiliation — sans authentification' },
     { name: '2. Authentification',   description: 'Login, validation OTP, vérification token, déconnexion, réinitialisation et changement de mot de passe' },
     { name: '3. Mon profil',         description: 'Données complètes de l\'affilié connecté (informations personnelles, prestations, cotisation)' },
@@ -278,6 +279,124 @@ Le token de session est valide jusqu'à déconnexion explicite (\`signOut\`) ou 
   paths: {
 
     // ════════════════════════════════════════════════════
+    // 0. RÉFÉRENTIELS — Préfectures & Branches
+    // ════════════════════════════════════════════════════
+
+    '/api/v1/prefecture': {
+      get: {
+        tags: ['0. Référentiels'],
+        summary: 'Liste de toutes les préfectures',
+        description: `Retourne la liste complète des préfectures de Guinée, triées par ordre alphabétique. **Aucune authentification requise.**
+
+Utiliser cette liste pour peupler les menus déroulants de saisie d'adresse (lieu de naissance, résidence) dans le formulaire de demande d'affiliation volontaire.
+
+### Routes disponibles
+| URL | Description |
+|-----|-------------|
+| \`GET /api/v1/prefecture\` | Toutes les préfectures |
+| \`GET /api/v1/prefecture/get_all_prefecture\` | Avec filtres + cache 24h |
+| \`GET /api/v1/prefecture/:id\` | Une préfecture par ID |
+        `,
+        parameters: [
+          { name: 'search', in: 'query', required: false, schema: { type: 'string' }, description: 'Filtrer par nom (partiel). Ex: `Conakry`', example: 'Cona' },
+          { name: 'paysId', in: 'query', required: false, schema: { type: 'integer', default: 1 }, description: 'Filtrer par pays (paysId=1 = Guinée). Utilisé uniquement sur `/get_all_prefecture`.' }
+        ],
+        responses: {
+          200: {
+            description: 'Liste des préfectures retournée avec succès',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean', example: true },
+                    data: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          id:   { type: 'integer', example: 1 },
+                          name: { type: 'string',  example: 'CONAKRY', description: 'Nom en majuscules' },
+                          code: { type: 'string',  example: 'CKY',     description: 'Code court alphanumériques (max 10 chars)' }
+                        }
+                      }
+                    }
+                  }
+                },
+                example: {
+                  success: true,
+                  data: [
+                    { id: 1, name: 'CONAKRY',   code: 'CKY' },
+                    { id: 2, name: 'COYAH',     code: 'COY' },
+                    { id: 3, name: 'DUBRÉKA',   code: 'DUB' },
+                    { id: 4, name: 'KINDIA',    code: 'KIN' },
+                    { id: 5, name: 'MAMOU',     code: 'MAM' }
+                  ]
+                }
+              }
+            }
+          },
+          500: { description: 'Erreur serveur', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } }
+        }
+      }
+    },
+
+    '/api/branches': {
+      get: {
+        tags: ['0. Référentiels'],
+        summary: 'Liste de toutes les branches d\'activité',
+        description: `Retourne la liste complète des branches d'activité (secteurs économiques) reconnues par la CNSS, triées par ordre alphabétique. **Aucune authentification requise.**
+
+Ces branches correspondent aux secteurs d'activité économique. Elles sont utilisées lors de la demande d'affiliation pour indiquer le domaine d'activité de l'affilié volontaire.
+
+### Routes disponibles
+| URL | Description |
+|-----|-------------|
+| \`GET /api/branches\` | Toutes les branches |
+| \`GET /api/branches/:id\` | Une branche par ID (inclut l'activité liée) |
+        `,
+        responses: {
+          200: {
+            description: 'Liste des branches retournée avec succès',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean', example: true },
+                    data: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          id:   { type: 'integer', example: 1 },
+                          name: { type: 'string',  example: 'Agriculture', description: 'Nom de la branche d\'activité' },
+                          code: { type: 'string',  example: 'AGR',         description: 'Code branche', nullable: true }
+                        }
+                      }
+                    }
+                  }
+                },
+                example: {
+                  success: true,
+                  data: [
+                    { id: 1, name: 'Agriculture' },
+                    { id: 2, name: 'Commerce' },
+                    { id: 3, name: 'Construction' },
+                    { id: 4, name: 'Industrie' },
+                    { id: 5, name: 'Services' },
+                    { id: 6, name: 'Transport' }
+                  ]
+                }
+              }
+            }
+          },
+          500: { description: 'Erreur serveur', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } }
+        }
+      }
+    },
+
+    // ════════════════════════════════════════════════════
     // 1. DEMANDE
     // ════════════════════════════════════════════════════
 
@@ -464,7 +583,8 @@ Toutes les pièces sont optionnelles à la soumission mais obligatoires pour la 
                   properties: {
                     token:        { type: 'string', description: '⚠️ Token **temporaire** — valide 30 min. À utiliser uniquement pour `verify_otp` et `resend_otp`' },
                     email:        { type: 'string', example: 'ma***@email.com',   nullable: true, description: 'Email masqué pour affichage (confirmation d\'envoi)' },
-                    phone_number: { type: 'string', example: '002246237***22',    nullable: true, description: 'Téléphone masqué pour affichage (confirmation d\'envoi)' }
+                    phone_number: { type: 'string', example: '002246237***22',    nullable: true, description: 'Téléphone masqué pour affichage (confirmation d\'envoi)' },
+                    otp_code:     { type: 'string', example: '483921', description: '🔧 **Dev uniquement** — Code OTP en clair pour faciliter les tests mobiles. **À retirer avant mise en production.**' }
                   }
                 }
               }

@@ -80,7 +80,9 @@ router.post('/login', async (req, res) => {
     return res.status(200).json({
       token,
       email: av ? av.email || null : null,
-      phone_number: av ? av.phone_number || null : null
+      phone_number: av ? av.phone_number || null : null,
+      // Inclus pour les tests mobile (dev) — retirer avant mise en production
+      otp_code: otpCode
     });
   } catch (error) {
     console.error('[AV login]', error);
