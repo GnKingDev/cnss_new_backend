@@ -139,8 +139,10 @@ app.use('/paiements', paiementRoutes.router || paiementRoutes);
 app.use('/demandes', demandeRoutes);
 app.use('/quittances', quittanceRoutes);
 app.use('/adhesions', adhesionRoutes);
-app.use('/affiliation-volontaire', affiliationVolontaireFullRoutes); // route.full.js — simulation + request_affiliation_volontaire
-app.use('/affiliation-volontaire', affiliationVolontaireRoutes);    // route.js — CRUD admin
+app.use('/api/v1/affiliation-volontaire', affiliationVolontaireFullRoutes); // route.full.js — simulation + request_affiliation_volontaire
+app.use('/api/v1/affiliation-volontaire', affiliationVolontaireRoutes);    // route.js — CRUD admin
+app.use('/affiliation-volontaire', affiliationVolontaireFullRoutes);        // rétrocompatibilité
+app.use('/affiliation-volontaire', affiliationVolontaireRoutes);            // rétrocompatibilité
 app.use('/api/affiliations-volontaires', affiliationVolontaireFullRoutes);
 app.use('/api/affiliations-volontaires', affiliationVolontaireRoutes);
 app.use('/api/v1/av/auth', userAffiliationVolontaireRoutes);

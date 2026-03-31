@@ -400,7 +400,7 @@ Ces branches correspondent aux secteurs d'activité économique. Elles sont util
     // 1. DEMANDE
     // ════════════════════════════════════════════════════
 
-    '/affiliation-volontaire/simulation': {
+    '/api/v1/affiliation-volontaire/simulation': {
       post: {
         tags: ['1. Demande'],
         summary: 'Simuler la cotisation mensuelle',
@@ -458,7 +458,7 @@ Taux par défaut :
       }
     },
 
-    '/affiliation-volontaire/request_affiliation_volontaire': {
+    '/api/v1/affiliation-volontaire/request_affiliation_volontaire': {
       post: {
         tags: ['1. Demande'],
         summary: 'Soumettre une demande d\'affiliation',
