@@ -77,22 +77,131 @@ router.post('/simulation', async (req, res) => {
 const uploadMiddleware = upload && upload.fields ? upload.fields(fileFields) : (req, res, next) => next();
 
 router.post('/request_affiliation_volontaire', uploadMiddleware, async (req, res) => {
+  console.log('[AV_REQUEST] ── Nouvelle demande reçue ──');
+  console.log('[AV_REQUEST] Content-Type:', req.headers['content-type']);
+  console.log('[AV_REQUEST] Body keys:', Object.keys(req.body || {}));
+  console.log('[AV_REQUEST] Files:', Object.keys(req.files || {}));
+
   try {
-    const data_request = typeof req.body.request_affiliation_volontaire === 'string'
-      ? JSON.parse(req.body.request_affiliation_volontaire)
-      : req.body.request_affiliation_volontaire;
+    // 1. Extraire et parser la payload
+    let data_request;
+    const rawField = req.body?.request_affiliation_volontaire;
 
+    if (!rawField && Object.keys(req.body || {}).length > 0) {
+      // Corps JSON direct (sans l'enveloppe request_affiliation_volontaire)
+      console.log('[AV_REQUEST] Pas de clé request_affiliation_volontaire — tentative lecture body direct');
+      data_request = req.body;
+    } else if (!rawField) {
+      console.error('[AV_REQUEST] Body vide ou champ request_affiliation_volontaire absent');
+      return res.status(400).json({
+        success: false,
+        message: 'Le champ request_affiliation_volontaire est requis dans le body (multipart ou JSON)'
+      });
+    } else if (typeof rawField === 'string') {
+      try {
+        data_request = JSON.parse(rawField);
+        console.log('[AV_REQUEST] JSON parsé depuis string. Clés:', Object.keys(data_request));
+      } catch (parseErr) {
+        console.error('[AV_REQUEST] Échec du JSON.parse:', parseErr.message);
+        console.error('[AV_REQUEST] Valeur reçue:', rawField.substring(0, 200));
+        return res.status(400).json({
+          success: false,
+          message: 'Le champ request_affiliation_volontaire contient un JSON invalide : ' + parseErr.message
+        });
+      }
+    } else {
+      data_request = rawField;
+      console.log('[AV_REQUEST] Objet direct. Clés:', Object.keys(data_request));
+    }
+
+    // 2. Vérifications champs obligatoires
+    const missing = [];
+    const nomVal    = data_request.last_name   || data_request.nom;
+    const prenomVal = data_request.first_name  || data_request.prenom;
+    const emailVal  = data_request.email;
+    const phoneVal  = data_request.phone_number;
+
+    if (!nomVal)    missing.push('nom (ou last_name)');
+    if (!prenomVal) missing.push('prénom (ou first_name)');
+    if (!emailVal)  missing.push('email');
+    if (!phoneVal)  missing.push('phone_number');
+
+    if (missing.length > 0) {
+      console.warn('[AV_REQUEST] Champs manquants:', missing.join(', '));
+      return res.status(400).json({
+        success: false,
+        message: `Champs obligatoires manquants : ${missing.join(', ')}`
+      });
+    }
+
+    // 3. Vérifier doublon email
+    const existingEmail = await AffiliationVolontaire.findOne({ where: { email: emailVal } });
+    if (existingEmail) {
+      console.warn('[AV_REQUEST] Email déjà utilisé:', emailVal, '→ id', existingEmail.id);
+      return res.status(400).json({
+        success: false,
+        message: `L'adresse email ${emailVal} est déjà associée à une demande d'affiliation (réf. #${existingEmail.id})`
+      });
+    }
+
+    // 4. Vérifier doublon téléphone
+    const existingPhone = await AffiliationVolontaire.findOne({ where: { phone_number: phoneVal } });
+    if (existingPhone) {
+      console.warn('[AV_REQUEST] Téléphone déjà utilisé:', phoneVal, '→ id', existingPhone.id);
+      return res.status(400).json({
+        success: false,
+        message: `Le numéro ${phoneVal} est déjà associé à une demande d'affiliation (réf. #${existingPhone.id})`
+      });
+    }
+
+    // 5. Attacher les fichiers uploadés
     const files = req.files || {};
-    if (files.cni?.[0]) data_request.cni_file_path = files.cni[0].path;
-    if (files.requester_picture?.[0]) data_request.requester_picture = files.requester_picture[0].path;
-    if (files.certificat_residence?.[0]) data_request.certificat_residence_file = files.certificat_residence[0].path;
+    if (files.cni?.[0]) {
+      data_request.cni_file_path = files.cni[0].path;
+      console.log('[AV_REQUEST] Fichier CNI:', files.cni[0].filename);
+    }
+    if (files.requester_picture?.[0]) {
+      data_request.requester_picture = files.requester_picture[0].path;
+      console.log('[AV_REQUEST] Photo:', files.requester_picture[0].filename);
+    }
+    if (files.certificat_residence?.[0]) {
+      data_request.certificat_residence_file = files.certificat_residence[0].path;
+      console.log('[AV_REQUEST] Certificat résidence:', files.certificat_residence[0].filename);
+    }
 
+    // 6. Mapper et créer
     const payload = mapRequestToModel(data_request);
-    await AffiliationVolontaire.create(payload);
-    return res.status(200).json({ message: "Demande d'affiliation volontaire soumise avec succès" });
+    console.log('[AV_REQUEST] Payload → DB:', JSON.stringify({
+      nom: payload.nom, prenom: payload.prenom,
+      email: payload.email, phone_number: payload.phone_number,
+      profession: payload.profession, sexe: payload.sexe
+    }));
+
+    const created = await AffiliationVolontaire.create(payload);
+    console.log('[AV_REQUEST] ✅ Créé avec succès. ID:', created.id);
+
+    return res.status(200).json({
+      success: true,
+      message: "Demande d'affiliation volontaire soumise avec succès",
+      id: created.id
+    });
+
   } catch (error) {
-    console.error(error);
-    res.status(400).json({ message: error.message });
+    // Erreur Sequelize : extraire les messages de validation
+    if (error.name === 'SequelizeValidationError' || error.name === 'SequelizeUniqueConstraintError') {
+      const details = (error.errors || []).map((e) => `${e.path}: ${e.message}`).join(', ');
+      console.error('[AV_REQUEST] ❌ Erreur Sequelize:', error.name, '→', details);
+      return res.status(400).json({
+        success: false,
+        message: `Erreur de validation : ${details || error.message}`
+      });
+    }
+    console.error('[AV_REQUEST] ❌ Erreur inattendue:', error.name, error.message);
+    console.error(error.stack);
+    return res.status(500).json({
+      success: false,
+      message: `Erreur serveur : ${error.message}`
+    });
   }
 });
 
