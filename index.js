@@ -67,6 +67,7 @@ const brancheRoutes = require('./db/branches/route');
 const banqueRoutes = require('./db/banques/route');
 const usersRoutes = require('./db/users/route');
 const requestEmployeurRoutes = require('./db/request_employeur/route');
+const publicRoutes = require('./db/public/route');
 const employeurRoutes = require('./db/XYemployeurs/route');
 const employeRoutes = require('./db/employe/route');
 const { cotisation_emplyeur_router: cotisationEmployeurRoutes } = require('./db/cotisation_employeur/route.full');
@@ -91,7 +92,9 @@ const userAffiliationVolontaireRoutes = require('./db/user_affiliation_volontair
 const prestationRoutes = require('./db/prestation/route');
 const biometrieRoutes = require('./db/biometrie/route');
 const reclamationRoutes = require('./db/reclamation/route');
+const correctionDirgaRoutes = require('./db/reclamation/route.correction');
 const quitusMenuRoutes = require('./db/quitus_menu/route');
+const immatriculationDirgaRoutes = require('./db/employe/route.immatriculation');
 
 // API Routes
 app.use('/api/pays', paysRoutes);
@@ -103,18 +106,23 @@ app.use('/api/banques', banqueRoutes);
 app.use('/api/v1/user', usersRoutes); // Updated to match documentation
 app.use('/api/users', usersRoutes); // Keep for backward compatibility
 app.use('/api/v1/employeur', employeurRoutes); // Updated to match documentation
+app.use('/v1/employeur', employeurRoutes); // BO proxy: Vite supprime /api
 app.use('/api/request-employeur', requestEmployeurRoutes);
+app.use('/api/v1/public', publicRoutes);
 app.use('/api/employeurs', employeurRoutes);
 app.use('/api/v1/employe', employeRoutes); // Updated to match documentation
+app.use('/v1/employe', employeRoutes); // BO proxy: Vite supprime /api
 app.use('/api/employes', employeRoutes); // Keep for backward compatibility
 app.use('/api/cotisations-employeur', cotisationEmployeurRoutes);
 app.use('/api/v1/cotisation_employeur', cotisationEmployeurRoutes); // alias pour employe_list, declare-periode, etc.
 app.use('/api/declarations-employe', declarationEmployeRoutes);
 app.use('/api/v1/paiement', paiementRoutes.router || paiementRoutes);
+app.use('/v1/paiement', paiementRoutes.router || paiementRoutes); // BO proxy: Vite supprime /api
 app.use('/api/paiements', paiementRoutes.router || paiementRoutes);
 app.use('/api/v1/quittance', quittanceRoutes); // Updated to match documentation
 app.use('/api/quittances', quittanceRoutes); // Keep for backward compatibility
 app.use('/api/penalites', penaliteRoutes);
+app.use('/api/v1/penalites', penaliteRoutes);
 app.use('/api/v1/demande', demandeRoutes); // Updated to match documentation
 app.use('/api/demandes', demandeRoutes); // Keep for backward compatibility
 app.use('/api/carrieres', carriereRoutes);
@@ -150,7 +158,11 @@ app.use('/api/v1/prestations', prestationRoutes);
 app.use('/api/v1/biometrie', biometrieRoutes);
 app.use('/v1/biometrie', biometrieRoutes); // BO proxy: Vite supprime /api
 app.use('/api/v1/reclamation', reclamationRoutes);
-app.use('/v1/reclamation', reclamationRoutes); // BO proxy: Vite supprime /api
+app.use('/v1/reclamation', reclamationRoutes);
+app.use('/api/v1/corrections-dirga', correctionDirgaRoutes);
+app.use('/v1/corrections-dirga', correctionDirgaRoutes); // BO proxy: Vite supprime /api
+app.use('/api/v1/immatriculation-dirga', immatriculationDirgaRoutes);
+app.use('/v1/immatriculation-dirga', immatriculationDirgaRoutes); // BO proxy
 app.use('/api/v1/quitus', quitusMenuRoutes);
 app.use('/v1/quitus', quitusMenuRoutes); // BO proxy: Vite supprime /api
 
@@ -285,11 +297,72 @@ ReclamationDemandeModel.sync({ alter: true })
   .then(() => console.log('✅ reclamation_demandes table synced'))
   .catch((err) => console.error('❌ reclamation_demandes sync error:', err.message));
 
+// Sync demande_acces_employe
+const DemandeAccesEmployeModel = require('./db/demande-acces-employe/model');
+DemandeAccesEmployeModel.sync({ alter: true })
+  .then(() => console.log('✅ demande_acces_employe table synced'))
+  .catch((err) => console.error('❌ demande_acces_employe sync error:', err.message));
+
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   runAvDeclarationsCron();
+  startPenalitesCron();
 });
+
+/**
+ * Pénalités retard de paiement : exécution une fois au démarrage puis toutes les minutes.
+ * Désactiver : ENABLE_PENALITES_CRON=false
+ * Intervalle (ms) : PENALITES_CRON_INTERVAL_MS (défaut 60000 = 1 min)
+ * Logs : chaque cycle affiche un numéro (#1, #2…) + le job log [penalites job] START/FIN.
+ */
+function startPenalitesCron() {
+  if (process.env.ENABLE_PENALITES_CRON === 'false') {
+    console.log('[penalites cron] désactivé (ENABLE_PENALITES_CRON=false)');
+    return;
+  }
+  const { runGeneratePenalites } = require('./jobs/generate-penalites');
+  const intervalMs = Math.max(10_000, parseInt(process.env.PENALITES_CRON_INTERVAL_MS || '60000', 10) || 60_000);
+  let cycle = 0;
+  let jobEnCours = false;
+
+  const run = () => {
+    if (jobEnCours) {
+      console.warn(
+        `[penalites cron] tick ignoré (${new Date().toISOString()}) — le job précédent n’est pas encore terminé (évite les chevauchements)`
+      );
+      return;
+    }
+    cycle += 1;
+    const n = cycle;
+    jobEnCours = true;
+    console.log(
+      `[penalites cron] ─── cycle #${n} ─── DÉBUT ${new Date().toISOString()} (intervalle ${intervalMs / 1000}s)`
+    );
+    runGeneratePenalites({ dryRun: false, enableLog: true })
+      .then((r) => {
+        console.log(
+          `[penalites cron] ─── cycle #${n} ─── TERMINÉ OK en ${r.durationMs ?? '?'}ms | scanned=${r.totalScanned} upsert=${r.upsertedOrUpdated} removed=${r.penalitesSupprimees}`
+        );
+      })
+      .catch((err) => {
+        console.error(
+          `[penalites cron] ─── cycle #${n} ─── TERMINÉ EN ERREUR:`,
+          err.message || err
+        );
+      })
+      .finally(() => {
+        jobEnCours = false;
+        console.log(`[penalites cron] ─── cycle #${n} — statut: fin d’exécution (prochain tick possible)`);
+      });
+  };
+
+  setImmediate(run);
+  setInterval(run, intervalMs);
+  console.log(
+    `[penalites cron] planificateur ACTIF — 1er run immédiat puis toutes les ${intervalMs / 1000}s (logs [penalites job] + [penalites cron])`
+  );
+}
 
 /** Au démarrage : génération automatique des déclarations pour tous les affiliés volontaires (cron au lancement). */
 function runAvDeclarationsCron() {

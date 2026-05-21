@@ -11,6 +11,8 @@
     "set-first-login": "node scripts/set-first-login.js",
     "create-admin-employeur": "node scripts/create-admin-employeur.js",
     "reset-av-password": "node scripts/reset-av-password.js",
+    "cron:penalites": "node jobs/generate-penalites.js",
+    "cron:penalites:dry": "node jobs/generate-penalites.js --dry-run",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

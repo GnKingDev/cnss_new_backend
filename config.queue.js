@@ -419,25 +419,25 @@ function startJob() {
       } else if (jobData.type === 'send_sms') {
         await handleNotifySms(jobData.Employe, jobData.Employeur, jobData.periode, done);
       } else if (jobData.type === 'affiliation_volontaire') {
-        await processAffiliationVolontaire(jobData, done);
+        await processAffiliationVolontaire(jobData, done) ;       
       } else {
         done(new Error(`Type de job inconnu: ${jobData.type}`));
       }
     } catch (err) {
-      console.error('[queue] process error:', err);
+      console.error('[queue] process error:', err); 
       done(err);
     }
   });
 }
 
 if (queue) {
-  queue.on('completed', (job) => {
+  queue.on('completed', (job) => { 
     console.log(`🗑️ Job ${job.id} terminé.`);
   });
 }
 
-module.exports = {
+module.exports = { 
   addJob,
-  startJob,
-  queue
+  startJob, 
+  queue 
 };

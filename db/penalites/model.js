@@ -63,6 +63,30 @@ const Penalite = sequelize.define('Penalite', {
       model: Employeur,
       key: 'id'
     }
+  },
+  /** Déclaration de cotisation à l'origine de cette pénalité (ex. retard de déclaration). */
+  cotisation_employeurId: {
+    type: DataTypes.INTEGER,
+    allowNull: true
+  },
+  /** 'RETARD_PAIEMENT' = cumul mensuel 5 % sur total_branche ; null = import / autre. */
+  type_source: {
+    type: DataTypes.STRING(32),
+    allowNull: true
+  },
+  montant_base: {
+    type: DataTypes.BIGINT,
+    allowNull: true,
+    comment: 'Montant initial de cotisation déclaré (base du calcul)'
+  },
+  mois_retard: {
+    type: DataTypes.INTEGER,
+    allowNull: true
+  },
+  date_limite_paiement: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    comment: 'Échéance : 20 du mois suivant la période'
   }
 }, {
   tableName: 'penalites',

@@ -53,7 +53,7 @@ async function ensureDeclarationsForAffiliation(affiliationVolontaireId) {
       }
       continue;
     }
-    const [row] = await DeclarationAffiliationVolontaire.findOrCreate({
+    const [row, wasCreated] = await DeclarationAffiliationVolontaire.findOrCreate({
       where: { affiliationVolontaireId, year, periode },
       defaults: {
         affiliationVolontaireId,
@@ -67,6 +67,15 @@ async function ensureDeclarationsForAffiliation(affiliationVolontaireId) {
     });
     byKey.set(key(year, periode), row);
     created++;
+
+    if (wasCreated) {
+      const { generateAppelCotisationAv } = require('../../services/appel-cotisation-av.service');
+      const declRaw = row.get ? row.get({ plain: true }) : row;
+      generateAppelCotisationAv(declRaw, affRaw)
+        .then(({ pdfPath }) => row.update({ facture_path: pdfPath }).catch(() => {}))
+        .catch((e) => console.error('[EnsureDecl] Erreur génération appel cotisation AV:', e.message));
+    }
+
     if (sessionService.isAvailable()) {
       await sessionService.setDeclarationAutoAv(affiliationVolontaireId, year, periode);
     }

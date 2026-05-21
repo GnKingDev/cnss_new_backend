@@ -154,13 +154,13 @@ router.post('/request_affiliation_volontaire', uploadMiddleware, async (req, res
 
     // 3. Vérifier doublon email
     const existingEmail = await AffiliationVolontaire.findOne({ where: { email: emailVal } });
-    if (existingEmail) {
+    if (existingEmail) { 
       console.warn('[AV_REQUEST] Email déjà utilisé:', emailVal, '→ id', existingEmail.id);
-      return res.status(400).json({
-        success: false,
+      return res.status(400).json({ 
+        success: false, 
         message: `L'adresse email ${emailVal} est déjà associée à une demande d'affiliation (réf. #${existingEmail.id})`
       });
-    }
+    } 
 
     // 4. Vérifier doublon téléphone
     const existingPhone = await AffiliationVolontaire.findOne({ where: { phone_number: phoneVal } });

@@ -15,7 +15,7 @@ const Demploye = require('../declaration-employe/model');
 const utility = require('./utility');
 const { EmployeToken, EmployeurToken } = require('../users/utility');
 const { verifyToken } = require('../XYemployeurs/utility');
-const { Op } = require('sequelize');
+const { Op, fn, col, literal } = require('sequelize');
 
 let genereQuittance, sendMailSuccesfulPaiement, addJob, addDeclarationCredit, closePenality, exportPaiement;
 try {
@@ -597,6 +597,35 @@ router.get('/init/penalite/paiement/:id', EmployeToken, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/v1/paiement/payeur/init-penalite/:id
+ * Initie le paiement d'une pénalité pour l'employeur connecté (portail employeur).
+ */
+router.get('/payeur/init-penalite/:id', EmployeurToken, async (req, res) => {
+  try {
+    const penaliteId = parseInt(req.params.id, 10);
+    if (Number.isNaN(penaliteId)) {
+      return res.status(400).json({ message: 'ID de pénalité invalide' });
+    }
+    const employeurId = req.user.user_id;
+    const penalite = await Penalite.findByPk(penaliteId);
+    if (!penalite) {
+      return res.status(404).json({ message: 'Pénalité introuvable' });
+    }
+    if (penalite.employeurId !== employeurId) {
+      return res.status(403).json({ message: 'Accès non autorisé à cette pénalité' });
+    }
+    if (penalite.status === 'payé' || penalite.is_paid) {
+      return res.status(400).json({ message: 'Cette pénalité est déjà payée' });
+    }
+    const link = await utility.initPenalite(penaliteId);
+    return res.status(200).json({ link });
+  } catch (error) {
+    console.error('[PAIEMENT] Error initializing penalty payment (employeur):', error);
+    return res.status(400).json({ message: 'Erreur veuillez réessayer' });
+  }
+});
+
 // ============================================
 // 2b. LENGO PAY – Génération URL de paiement (portal.lengopay.com/api/v1/payments)
 // ============================================
@@ -996,6 +1025,212 @@ router.post('/validate_payment/:id', verifyToken, async (req, res) => {
  * Middleware: verifyToken (DIRGA/administration)
  * Paramètres: :start = date début (YYYY-MM-DD), :choix = "true" (payés) ou "false" (non payés)
  */
+// ── GET /bo/debug-methodes — liste les valeurs distinctes de which_methode ───
+router.get('/bo/debug-methodes', verifyToken, async (req, res) => {
+  const rows = await Paiement.findAll({
+    attributes: ['which_methode', [fn('COUNT', col('id')), 'count']],
+    group: ['which_methode'],
+    raw: true,
+  });
+  return res.json(rows);
+});
+
+// ── GET /bo/stats — statistiques globales pour le back-office ────────────────
+router.get('/bo/stats', verifyToken, async (req, res) => {
+  try {
+    const { is_paid, which_methode, date_debut, date_fin, recherche, employeurId } = req.query;
+
+    // Construire le where principal
+    const where = {};
+
+    if (date_debut || date_fin) {
+      where.createdAt = {};
+      if (date_debut) where.createdAt[Op.gte] = new Date(date_debut);
+      if (date_fin)   where.createdAt[Op.lte] = new Date(date_fin + 'T23:59:59');
+    }
+
+    if (is_paid === 'true')  where.is_paid = true;
+    if (is_paid === 'false') where.is_paid = false;
+
+    if (which_methode && which_methode !== 'all') {
+      if (which_methode === 'Banque') {
+        where[Op.and] = where[Op.and] || [];
+        where[Op.and].push({
+          [Op.or]: [{ which_methode: 'Banque' }, { which_methode: null }],
+        });
+      } else {
+        where.which_methode = which_methode;
+      }
+    }
+
+    const empId = parseInt(employeurId, 10);
+    if (!isNaN(empId) && empId > 0) where.employeurId = empId;
+
+    // JOIN Employeur uniquement si filtre recherche actif
+    const employeurWhere = recherche?.trim()
+      ? { raison_sociale: { [Op.like]: `%${recherche.trim()}%` } }
+      : undefined;
+
+    const includeEmp = employeurWhere ? [{
+      model: Employeur,
+      as: 'employeur',
+      attributes: [],
+      where: employeurWhere,
+      required: true,
+    }] : [];
+
+    const includeCotisation = {
+      model: CotisationEmployeur,
+      as: 'cotisation_employeur',
+      attributes: [],
+      required: false,
+    };
+
+    // where sans is_paid pour les comptes individuels payé/en attente
+    const whereBase = { ...where };
+    delete whereBase.is_paid;
+
+    // Comptes
+    const [total, payes, enAttente] = await Promise.all([
+      Paiement.count({ where, include: includeEmp }),
+      Paiement.count({ where: { ...whereBase, is_paid: true },  include: includeEmp }),
+      Paiement.count({ where: { ...whereBase, is_paid: false }, include: includeEmp }),
+    ]);
+
+    // Montants (SUM total_branche)
+    const montantPayeResult = await Paiement.findOne({
+      attributes: [[fn('SUM', col('cotisation_employeur.total_branche')), 'total']],
+      where: { ...whereBase, is_paid: true },
+      include: [...includeEmp, includeCotisation],
+      raw: true,
+    });
+
+    const montantAttenteResult = await Paiement.findOne({
+      attributes: [[fn('SUM', col('cotisation_employeur.total_branche')), 'total']],
+      where: { ...whereBase, is_paid: false },
+      include: [...includeEmp, includeCotisation],
+      raw: true,
+    });
+
+    // Montant total
+    const montantTotalResult = await Paiement.findOne({
+      attributes: [[fn('SUM', col('cotisation_employeur.total_branche')), 'total']],
+      where,
+      include: [...includeEmp, includeCotisation],
+      raw: true,
+    });
+
+    // Répartition par méthode (uniquement si pas de filtre which_methode)
+    let parMethode = [];
+    if (!which_methode || which_methode === 'all') {
+      parMethode = await Paiement.findAll({
+        attributes: ['which_methode', [fn('COUNT', col('id')), 'count']],
+        where,
+        include: includeEmp,
+        group: ['which_methode'],
+        raw: true,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        total,
+        payes,
+        en_attente: enAttente,
+        montant_paye:    parseInt(montantPayeResult?.total   || 0, 10),
+        montant_attente: parseInt(montantAttenteResult?.total || 0, 10),
+        montant_total:   parseInt(montantTotalResult?.total  || 0, 10),
+        par_methode: parMethode.map((m) => ({
+          methode: m.which_methode || 'Virement',
+          count: parseInt(m.count, 10),
+        })),
+      },
+    });
+  } catch (err) {
+    console.error('[PAIEMENT] bo/stats:', err.message);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ── GET /bo/list — liste paginée pour le back-office ─────────────────────────
+router.get('/bo/list', verifyToken, async (req, res) => {
+  try {
+    const page    = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit   = Math.min(100, parseInt(req.query.limit) || 15);
+    const offset  = (page - 1) * limit;
+
+    const { is_paid, which_methode, date_debut, date_fin, recherche, employeurId } = req.query;
+    console.log('[PAIEMENT bo/list] query params:', { is_paid, which_methode, date_debut, date_fin, recherche, employeurId });
+
+    const where = {};
+
+    if (is_paid === 'true')  where.is_paid = true;
+    if (is_paid === 'false') where.is_paid = false;
+
+    if (which_methode && which_methode !== 'all') {
+      if (which_methode === 'Banque') {
+        // Virement bancaire = which_methode 'Banque' OU null (mode standard)
+        where[Op.and] = where[Op.and] || [];
+        where[Op.and].push({
+          [Op.or]: [
+            { which_methode: 'Banque' },
+            { which_methode: null },
+          ],
+        });
+      } else {
+        where.which_methode = which_methode;
+      }
+    }
+    const empId = parseInt(employeurId, 10);
+    if (!isNaN(empId) && empId > 0) where.employeurId = empId;
+
+    console.log('[PAIEMENT bo/list] where clause:', JSON.stringify(where, (key, val) => typeof key === 'symbol' ? String(key) : val));
+
+    if (date_debut || date_fin) {
+      where.createdAt = {};
+      if (date_debut) where.createdAt[Op.gte] = new Date(date_debut);
+      if (date_fin)   where.createdAt[Op.lte] = new Date(date_fin + 'T23:59:59');
+    }
+
+    const employeurWhere = recherche?.trim()
+      ? { raison_sociale: { [Op.like]: `%${recherche.trim()}%` } }
+      : undefined;
+
+    const { count, rows } = await Paiement.findAndCountAll({
+      where,
+      include: [
+        {
+          model: Employeur,
+          as: 'employeur',
+          attributes: ['id', 'raison_sociale', 'no_immatriculation'],
+          where: employeurWhere,
+          required: !!employeurWhere,
+        },
+        {
+          model: CotisationEmployeur,
+          as: 'cotisation_employeur',
+          attributes: ['id', 'total_cotisation', 'total_branche', 'periode', 'year'],
+          required: false,
+        },
+      ],
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset,
+      distinct: true,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: rows,
+      pagination: { page, limit, total: count, totalPages: Math.ceil(count / limit) },
+    });
+  } catch (err) {
+    console.error('[PAIEMENT] bo/list:', err.message);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 router.get('/paiement_by_mouth/:start/:choix', verifyToken, async (req, res) => {
   try {
     const start = req.params.start;

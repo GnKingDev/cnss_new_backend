@@ -13,14 +13,23 @@ const Quittance = require('../quittance/model');
 const { EmployeurToken } = require('../users/utility');
 const cotisationUtil = require('../cotisation_employeur/utility');
 
-let genereQuittance, sendMailSuccesfulPaiement;
+let genereQuittance, sendMailSuccesfulPaiement, sendMailEmployeurValidation;
 try {
   const u2 = require('../../utility2');
   genereQuittance = u2.genereQuittance || (() => Promise.resolve());
   sendMailSuccesfulPaiement = u2.sendMailSuccesfulPaiement || (() => Promise.resolve());
+  sendMailEmployeurValidation = u2.sendMailEmployeurValidation || (() => Promise.resolve());
 } catch {
   genereQuittance = () => Promise.resolve();
   sendMailSuccesfulPaiement = () => Promise.resolve();
+  sendMailEmployeurValidation = () => Promise.resolve();
+}
+
+let generatedNotification;
+try {
+  generatedNotification = require('../../utility').generatedNotification;
+} catch {
+  generatedNotification = null;
 }
 
 const RECLAMATION_TYPES = ReclamationDemande.RECLAMATION_TYPES;
@@ -663,6 +672,200 @@ router.put('/bo/demandes/:id/statut', async (req, res) => {
       progress: progressMap[statut] ?? d.progress,
       date_response: ['approved', 'rejected'].includes(statut) ? new Date() : d.date_response,
     });
+
+    // ── Notification d'immatriculation : générer le PDF + Document + email ──
+    if (statut === 'approved' && d.type === 'notification') {
+      try {
+        if (!generatedNotification) {
+          console.warn(`[RECLAMATION_NOTIFICATION] #${d.id} — generatedNotification non disponible (puppeteer manquant?)`);
+        } else {
+          const employeurRecord = await Employeur.findByPk(d.employeur_id);
+          if (!employeurRecord) {
+            console.warn(`[RECLAMATION_NOTIFICATION] #${d.id} — Employeur #${d.employeur_id} introuvable`);
+          } else {
+            const { generateUniqueCode } = require('../users/utility');
+            const code = generateUniqueCode(9);
+            const notifName = `immatriculation-rec-${d.id}-${employeurRecord.id}-${code}`;
+
+            // 1. Générer le PDF
+            const filePath = await generatedNotification(notifName, employeurRecord, code);
+            const docPath = `/api/v1/docsx/${notifName}.pdf`;
+            console.log(`[RECLAMATION_NOTIFICATION] #${d.id} — PDF généré : ${notifName}.pdf`);
+
+            // 2. Enregistrer dans la table documents (accès employeur)
+            await Document.create({
+              name: "Notification d'immatriculation",
+              path: docPath,
+              employeurId: employeurRecord.id,
+              code,
+            });
+
+            // 3. Mettre à jour document_path de la réclamation
+            await d.update({ document_path: docPath });
+
+            // 4. Envoyer par email
+            try {
+              await sendMailEmployeurValidation(employeurRecord.email, employeurRecord, null, filePath);
+              console.log(`[RECLAMATION_NOTIFICATION] #${d.id} — Email envoyé à ${employeurRecord.email}`);
+            } catch (mailErr) {
+              console.error(`[RECLAMATION_NOTIFICATION] #${d.id} — Erreur email:`, mailErr.message);
+            }
+          }
+        }
+      } catch (notifErr) {
+        console.error(`[RECLAMATION_NOTIFICATION] #${d.id} — Erreur génération:`, notifErr.message);
+      }
+    }
+
+    // ── Correction date de naissance : mettre à jour l'employé ──
+    if (statut === 'approved' && d.type === 'correction_naissance' && d.description) {
+      try {
+        const Employe = require('../employe/model');
+
+        // 1. Extraire le matricule et la nouvelle date depuis la description
+        const matriculeMatch = d.description.match(/Matricule\s*:\s*([^\s|]+)/);
+        const nouvelleDateMatch = d.description.match(/Nouvelle date de naissance à corriger\s*:\s*([^|]+)/);
+
+        if (!matriculeMatch || !nouvelleDateMatch) {
+          console.warn(`[RECLAMATION_CORRECTION_NAISSANCE] #${d.id} — matricule ou nouvelle date manquants dans la description`);
+        } else {
+          const matricule = matriculeMatch[1].trim();
+          const nouvelleDateStr = nouvelleDateMatch[1].trim();
+
+          // 2. Parser la nouvelle date (formats : DD/MM/YYYY ou YYYY-MM-DD)
+          let nouvelleDate;
+          if (/^\d{2}\/\d{2}\/\d{4}$/.test(nouvelleDateStr)) {
+            const [day, month, year] = nouvelleDateStr.split('/');
+            nouvelleDate = new Date(`${year}-${month}-${day}`);
+          } else {
+            nouvelleDate = new Date(nouvelleDateStr);
+          }
+
+          if (isNaN(nouvelleDate.getTime())) {
+            console.warn(`[RECLAMATION_CORRECTION_NAISSANCE] #${d.id} — date invalide : "${nouvelleDateStr}"`);
+          } else {
+            // 3. Trouver l'employé par matricule
+            const employe = await Employe.findOne({ where: { matricule } });
+            if (!employe) {
+              console.warn(`[RECLAMATION_CORRECTION_NAISSANCE] #${d.id} — employé introuvable pour matricule="${matricule}"`);
+            } else {
+              const ancienImmat = employe.no_immatriculation || '';
+
+              // 4. Recalculer le no_immatriculation
+              // Structure : [genre:1][année[2]][année[3]][mois:2][code_prefecture:2+][6 derniers chiffres]
+              // On garde : genre (pos 0), code_prefecture + 6 derniers (5 derniers chars du no)
+              // On remplace : positions 1-4 (année 2 chiffres + mois 2 chiffres)
+              const newYear = nouvelleDate.getUTCFullYear().toString();
+              const newMonth = String(nouvelleDate.getUTCMonth() + 1).padStart(2, '0');
+              const newDatePart = `${newYear[2]}${newYear[3]}${newMonth}`; // ex: "6710"
+
+              let newImmat = ancienImmat;
+              if (ancienImmat.length >= 5) {
+                // genre = position 0, date = positions 1-4, le reste inchangé
+                const genre = ancienImmat[0];
+                const reste = ancienImmat.slice(5); // code prefecture + 6 derniers chiffres
+                newImmat = `${genre}${newDatePart}${reste}`;
+              }
+
+              // 5. Mettre à jour l'employé
+              await employe.update({
+                date_of_birth: nouvelleDate,
+                no_immatriculation: newImmat,
+              });
+
+              console.log(`[RECLAMATION_CORRECTION_NAISSANCE] #${d.id} — Employé matricule=${matricule} mis à jour`);
+              console.log(`  date_of_birth     : ${nouvelleDateStr}`);
+              console.log(`  no_immatriculation: ${ancienImmat} → ${newImmat}`);
+            }
+          }
+        }
+      } catch (corrErr) {
+        console.error(`[RECLAMATION_CORRECTION_NAISSANCE] #${d.id} — Erreur mise à jour employé:`, corrErr.message);
+        // On ne bloque pas la réponse — le statut est déjà mis à jour
+      }
+    }
+
+    // ── Correction de genre : mettre à jour l'employé ──
+    if (statut === 'approved' && d.type === 'correction_genre' && d.description) {
+      try {
+        const Employe = require('../employe/model');
+
+        // 1. Parser la description (JSON front ou texte pipe script)
+        let descData;
+        try {
+          descData = JSON.parse(d.description);
+        } catch (_) {
+          // Format texte pipe : "__employe_id:12 | __genre:F | ..."
+          const idMatch = d.description.match(/__employe_id:(\d+)/);
+          const genreMatch = d.description.match(/__genre:([MF])/);
+          if (idMatch && genreMatch) {
+            descData = { employe_id: parseInt(idMatch[1], 10), genre: genreMatch[1] };
+          }
+        }
+
+        if (!descData || !descData.employe_id || !descData.genre) {
+          console.warn(`[RECLAMATION_CORRECTION_GENRE] #${d.id} — employe_id ou genre manquant dans la description`);
+        } else {
+          const employe = await Employe.findByPk(descData.employe_id);
+          if (!employe) {
+            console.warn(`[RECLAMATION_CORRECTION_GENRE] #${d.id} — employé #${descData.employe_id} introuvable`);
+          } else {
+            const ancienImmat = employe.no_immatriculation || '';
+            const nouveauGenreCode = descData.genre === 'M' ? '1' : '2';
+
+            // Recalculer no_immatriculation : remplacer uniquement la position 0 (genre)
+            const newImmat = ancienImmat.length >= 1
+              ? `${nouveauGenreCode}${ancienImmat.slice(1)}`
+              : ancienImmat;
+
+            await employe.update({
+              gender: descData.genre,
+              no_immatriculation: newImmat,
+            });
+
+            console.log(`[RECLAMATION_CORRECTION_GENRE] #${d.id} — Employé #${employe.id} (${employe.last_name} ${employe.first_name}) mis à jour`);
+            console.log(`  gender            : ${employe.gender} → ${descData.genre}`);
+            console.log(`  no_immatriculation: ${ancienImmat} → ${newImmat}`);
+          }
+        }
+      } catch (corrErr) {
+        console.error(`[RECLAMATION_CORRECTION_GENRE] #${d.id} — Erreur mise à jour employé:`, corrErr.message);
+      }
+    }
+
+    // ── Changement raison sociale : mettre à jour l'employeur + Paylican ──
+    if (statut === 'approved' && d.type === 'changement_raison_sociale' && d.description) {
+      try {
+        const nouvelleRaisonSociale = d.description.trim();
+        if (nouvelleRaisonSociale) {
+          const employeurRecord = await Employeur.findByPk(d.employeur_id);
+          if (!employeurRecord) {
+            console.warn(`[RECLAMATION_CHANGEMENT_RS] #${d.id} — Employeur #${d.employeur_id} introuvable`);
+          } else {
+            const ancienneRS = employeurRecord.raison_sociale || '';
+
+            // 1. Mettre à jour en DB
+            employeurRecord.raison_sociale = nouvelleRaisonSociale;
+            await employeurRecord.save();
+            console.log(`[RECLAMATION_CHANGEMENT_RS] #${d.id} — Employeur #${d.employeur_id} mis à jour`);
+            console.log(`  raison_sociale: "${ancienneRS}" → "${nouvelleRaisonSociale}"`);
+
+            // 2. Synchroniser avec Paylican
+            try {
+              const { paylican_token, paylican_create_company } = require('../XYemployeurs/utility');
+              const token = await paylican_token();
+              await paylican_create_company(employeurRecord, token, employeurRecord.no_immatriculation);
+              console.log(`[RECLAMATION_CHANGEMENT_RS] #${d.id} — Paylican mis à jour pour ${employeurRecord.no_immatriculation}`);
+            } catch (paylicanErr) {
+              console.error(`[RECLAMATION_CHANGEMENT_RS] #${d.id} — Erreur Paylican:`, paylicanErr.message);
+              // On ne bloque pas — la DB est déjà mise à jour
+            }
+          }
+        }
+      } catch (rsErr) {
+        console.error(`[RECLAMATION_CHANGEMENT_RS] #${d.id} — Erreur mise à jour employeur:`, rsErr.message);
+      }
+    }
 
     return res.status(200).json({ success: true, data: d });
   } catch (err) {

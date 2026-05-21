@@ -49,6 +49,8 @@ Employeur.hasMany(CotisationEmployeur, { foreignKey: 'employeurId', as: 'cotisat
 Employeur.hasMany(Paiement, { foreignKey: 'employeurId', as: 'paiements' });
 Employeur.hasMany(Quittance, { foreignKey: 'employeurId', as: 'quittances' });
 Employeur.hasMany(Penalite, { foreignKey: 'employeurId', as: 'penalites' });
+CotisationEmployeur.hasMany(Penalite, { foreignKey: 'cotisation_employeurId', as: 'penalites' });
+Penalite.belongsTo(CotisationEmployeur, { foreignKey: 'cotisation_employeurId', as: 'cotisation_employeur' });
 Employeur.hasMany(Demande, { foreignKey: 'employeurId', as: 'demandes' });
 Employeur.hasMany(Document, { foreignKey: 'employeurId', as: 'documents' });
 Employeur.hasMany(Succursale, { foreignKey: 'employeurId', as: 'succursales' });

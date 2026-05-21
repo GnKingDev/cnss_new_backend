@@ -24,14 +24,13 @@ const Employeur = require('../XYemployeurs/model');
 const document = require('../document/model');
 const employe = require('../employe/model');
 const { Op } = require('sequelize');
+const penaliteRetard = require('../penalites/penaliteRetardPaiement.util');
 
 const {
   MONTHS,
-  hasPassed20th,
   getSalarySoumisCotisation,
   getCotisationForEmployee,
   computeBranches,
-  getPenaliteAmount,
   isPeriodeDeclared,
   isTrimestreDeclared,
   buildSendDataBase,
@@ -168,11 +167,10 @@ router.post('/declare-periode', EmployeurToken, async (req, res) => {
 
     const Cemployeur = await cotisation_employeur.create(data_cotisation_employeur);
 
-    if (hasPassed20th()) {
-      Cemployeur.is_penalite_applied = true;
-      Cemployeur.penelite_amount = getPenaliteAmount(Cemployeur.total_branche);
-      await Cemployeur.save();
-    }
+    /**
+     * Pénalité : pas d’insert dans `penalites` ici. Le cron (`jobs/generate-penalites.js`) est autonome :
+     * il parcourt toutes les cotisations de tous les employeurs et applique la même règle (jour de dépôt > 20).
+     */
 
     const declWithIds = data_declaration_employe.map((el) => ({
       ...el,
@@ -206,11 +204,23 @@ router.post('/declare-periode', EmployeurToken, async (req, res) => {
       const insertToOldb = await cotisation_employeur.findByPk(Cemployeur.id, { include: [{ model: Employeur, as: 'employeur' }] });
       addDeclartionDebit(insertToOldb, `${data_cotisation_employeur.year}${monthInfo.code}`);
       const pdfBase64 = pdfResult.buffer ? pdfResult.buffer.toString('base64') : null;
+      const prevPen = penaliteRetard.previewPenalitePourPeriode(
+        {
+          periode: data_cotisation_employeur.periode,
+          trimestre: data_cotisation_employeur.trimestre,
+          year: data_cotisation_employeur.year
+        },
+        Number(Cemployeur.total_branche ?? Cemployeur.total_cotisation) || 0,
+        new Date()
+      );
       return res.status(200).json({
         filePath: `${fileName}.pdf`,
         pdfBase64: pdfBase64 || undefined,
-        is_penalite_applied: Cemployeur.is_penalite_applied,
-        penelite_amount: Cemployeur.penelite_amount
+        is_penalite_applied: prevPen.k > 0 && prevPen.montantPenalite > 0,
+        penelite_amount: prevPen.montantPenalite,
+        mois_retard_paiement: prevPen.k,
+        date_limite_paiement: prevPen.dateLimitePaiement,
+        penalite_id: null
       });
     } catch (err) {
       console.error(err);
@@ -275,10 +285,15 @@ router.post('/facture', EmployeurToken, async (req, res) => {
     Object.assign(sendData, branches);
     sendData.total_branche = branches.total_branche;
 
-    if (hasPassed20th()) {
-      sendData.is_penalite_applied = true;
-      sendData.penelite_amount = getPenaliteAmount(sendData.total_branche);
-    }
+    const prevPen = penaliteRetard.previewPenalitePourPeriode(
+      { periode: data.periode, trimestre: data.trimestre, year: data.year },
+      Number(sendData.total_branche ?? sendData.total_cotisation) || 0,
+      new Date()
+    );
+    sendData.is_penalite_applied = prevPen.k > 0 && prevPen.montantPenalite > 0;
+    sendData.penelite_amount = prevPen.montantPenalite;
+    sendData.mois_retard_paiement = prevPen.k;
+    sendData.date_limite_paiement = prevPen.dateLimitePaiement;
 
     return res.status(200).json(sendData);
   } catch (error) {

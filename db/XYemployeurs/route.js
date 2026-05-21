@@ -12,6 +12,7 @@ const Users = require('../users/model');
 const Prefecture = require('../prefecture/model');
 const Branche = require('../branches/model');
 const CotisationEmployeur = require('../cotisation_employeur/model');
+const Penalite = require('../penalites/model');
 const Demploye = require('../declaration-employe/model');
 const Paiement = require('../paiement/model');
 const utility = require('./utility');
@@ -1953,10 +1954,21 @@ router.get('/:id/compte', asyncHandler(async (req, res) => {
     order: [['createdAt', 'DESC']],
     limit,
     offset,
+    include: [
+      {
+        model: Penalite,
+        as: 'penalites',
+        required: false,
+        attributes: ['id', 'montant', 'status', 'is_paid']
+      }
+    ]
   });
 
   // Transformer chaque cotisation en ligne de compte (débit = facture, crédit = paiement)
-  const transactions = cotisations.map(c => ({
+  const transactions = cotisations.map((c) => {
+    const penalitesLiees = c.penalites || [];
+    const montantPenalitesLiees = penalitesLiees.reduce((s, p) => s + (Number(p.montant) || 0), 0);
+    return {
     id: c.id,
     type: 'facturation',
     libelle: c.motif || `Cotisation ${c.periode || c.year || ''}`,
@@ -1975,18 +1987,30 @@ router.get('/:id/compte', asyncHandler(async (req, res) => {
     risque_professionnel: c.risque_professionnel,
     assurance_maladie: c.assurance_maladie,
     vieillesse: c.vieillesse,
-    penelite_amount: c.penelite_amount,
-    is_penalite_applied: c.is_penalite_applied,
+    penelite_amount: montantPenalitesLiees > 0 ? montantPenalitesLiees : (Number(c.penelite_amount) || 0),
+    is_penalite_applied: c.is_penalite_applied || penalitesLiees.length > 0,
+    penalite_ids: penalitesLiees.map((p) => p.id),
     current_effectif: c.current_effectif,
-  }));
+  };
+  });
 
-  // Totaux globaux (toutes pages confondues)
-  const [sumTotal, sumPaid, countPaid, countUnpaid, nbEmployes] = await Promise.all([
+  // Totaux globaux (toutes pages confondues) + pénalités impayées (lignes indépendantes dans `penalites`)
+  const [
+    sumTotal,
+    sumPaid,
+    countPaid,
+    countUnpaid,
+    nbEmployes,
+    sumPenalitesImpayees,
+    nbPenalitesImpayees
+  ] = await Promise.all([
     CotisationEmployeur.sum('total_cotisation', { where }),
     CotisationEmployeur.sum('total_cotisation', { where: { ...where, is_paid: true } }),
     CotisationEmployeur.count({ where: { ...where, is_paid: true } }),
     CotisationEmployeur.count({ where: { ...where, is_paid: false } }),
     Employe.count({ where: { employeurId } }),
+    Penalite.sum('montant', { where: { employeurId, is_paid: false } }),
+    Penalite.count({ where: { employeurId, is_paid: false } })
   ]);
 
   const totalDebit  = Number(sumTotal)  || 0;
@@ -2014,7 +2038,8 @@ router.get('/:id/compte', asyncHandler(async (req, res) => {
         nbFacturations: count,
         nbPaiements: countPaid,
         cotisationsEnAttente: countUnpaid,
-        totalPenalites: 0,
+        totalPenalites: Number(sumPenalitesImpayees) || 0,
+        nbPenalitesEnAttente: nbPenalitesImpayees
       },
       pagination: {
         page,

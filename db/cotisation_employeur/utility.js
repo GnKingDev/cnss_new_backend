@@ -40,7 +40,8 @@ const RATES = {
 };
 
 /**
- * Vérifie si la date du jour est après le 20 du mois (échéance déclaration).
+ * Vérifie si la date de référence est un jour après le 20 du mois (même règle qu’à la déclaration).
+ * À la déclaration : date du jour de soumission. Au cron : date de création de la cotisation (`createdAt`).
  * @param {Date} [refDate=new Date()] - Date de référence
  * @returns {boolean}
  */

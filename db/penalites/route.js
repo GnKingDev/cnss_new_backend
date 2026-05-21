@@ -1,6 +1,28 @@
 const express = require('express');
 const router = express.Router();
 const Penalite = require('./model');
+const { EmployeurToken } = require('../users/utility');
+
+/**
+ * GET /me — Pénalités de l'employeur connecté (token employeur).
+ * Doit être déclaré avant GET /:id pour ne pas intercepter "me" comme un id.
+ */
+router.get('/me', EmployeurToken, async (req, res) => {
+  try {
+    const employeurId = req.user.user_id;
+    if (employeurId == null) {
+      return res.status(400).json({ message: 'Profil employeur introuvable' });
+    }
+    const penalites = await Penalite.findAll({
+      where: { employeurId },
+      include: [{ association: 'employeur', attributes: ['id', 'raison_sociale', 'no_immatriculation'] }],
+      order: [['createdAt', 'DESC']]
+    });
+    res.json(penalites);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // GET all penalites
 router.get('/', async (req, res) => {

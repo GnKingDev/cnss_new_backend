@@ -501,6 +501,40 @@ router.get('/declarations/:id/status', utility.AVToken, async (req, res) => {
   }
 });
 
+// GET declarations/:id/facture — retourne le PDF appel à cotisation (regénère si absent)
+router.get('/declarations/:id/facture', utility.AVToken, async (req, res) => {
+  try {
+    const affiliationVolontaireId = req.user.affiliationVolontaireId;
+    const decl = await DeclarationAffiliationVolontaire.findOne({
+      where: { id: req.params.id, affiliationVolontaireId }
+    });
+    if (!decl) return res.status(404).json({ message: 'Déclaration non trouvée' });
+
+    const affiliation = await AffiliationVolontaire.findByPk(affiliationVolontaireId);
+    if (!affiliation) return res.status(404).json({ message: 'Affiliation non trouvée' });
+
+    const { generateAppelCotisationAv } = require('../../services/appel-cotisation-av.service');
+    const declRaw = decl.get ? decl.get({ plain: true }) : decl;
+    const avRaw   = affiliation.get ? affiliation.get({ plain: true }) : affiliation;
+
+    const { pdfPath, buffer } = await generateAppelCotisationAv(declRaw, avRaw);
+
+    if (!decl.facture_path || decl.facture_path !== pdfPath) {
+      decl.update({ facture_path: pdfPath }).catch(() => {});
+    }
+
+    const filename = `appel-cotisation-av-${avRaw.no_immatriculation || avRaw.id}-${declRaw.periode}-${declRaw.year}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.setHeader('Content-Security-Policy', 'frame-ancestors *');
+    res.setHeader('Content-Length', buffer.length);
+    return res.send(buffer);
+  } catch (error) {
+    console.error('[AV GET declarations facture]', error);
+    return res.status(500).json({ message: 'Erreur lors de la génération du PDF' });
+  }
+});
+
 // ============================================
 // 2d. LENGO PAY – Génération URL de paiement (télédéclaration AV)
 // ============================================

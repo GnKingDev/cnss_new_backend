@@ -71,6 +71,12 @@ const DeclarationAffiliationVolontaire = sequelize.define('declaration_affiliati
     allowNull: true,
     defaultValue: null,
     comment: 'Méthode de paiement utilisée (DJOMY_OM, DJOMY_MOMO, LENGO, etc.)'
+  },
+  facture_path: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: null,
+    comment: 'Chemin du PDF appel à cotisation généré automatiquement'
   }
 }, {
   tableName: 'declaration_affiliation_volontaire',
