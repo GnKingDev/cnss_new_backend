@@ -14,8 +14,6 @@ const puppeteer = require('puppeteer');
 const QRCode    = require('qrcode');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
-const DOCS_DIR = path.join(ROOT_DIR, 'document', 'docs');
-if (!fs.existsSync(DOCS_DIR)) fs.mkdirSync(DOCS_DIR, { recursive: true });
 
 const IMAGE_PATHS = {
   logo:     path.join(ROOT_DIR, 'CNSS.jpg'),
@@ -110,11 +108,11 @@ function buildBranchesTable(av, plafond) {
 }
 
 /**
- * Génère le PDF "Appel à cotisation AV", l'écrit sur disque et retourne le chemin + buffer.
+ * Génère le PDF "Appel à cotisation AV" en mémoire et retourne le buffer — rien n'est écrit sur disque.
  *
  * @param {object} declaration - instance plain DeclarationAffiliationVolontaire
  * @param {object} affiliation - instance plain AffiliationVolontaire
- * @returns {Promise<{ pdfPath: string, buffer: Buffer }>}
+ * @returns {Promise<Buffer>}
  */
 async function generateAppelCotisationAv(declaration, affiliation) {
   const logo     = readImageBase64(IMAGE_PATHS.logo);
@@ -315,15 +313,11 @@ async function generateAppelCotisationAv(declaration, affiliation) {
     await page.setContent(html, { waitUntil: 'load', timeout: 30000 });
     await page.emulateMediaType('screen');
 
-    const fileName  = `appel-cotisation-av-${av.no_immatriculation || av.id}-${decl.periode}-${annee}`;
-    const pdfPath   = path.join(DOCS_DIR, `${fileName}.pdf`);
     const pdfBuffer = await page.pdf({ format: 'A4', landscape: true, printBackground: true });
-
-    fs.writeFileSync(pdfPath, pdfBuffer);
     await browser.close().catch(() => {});
 
-    console.log(`[AppelCotisationAV] PDF généré : ${fileName}.pdf`);
-    return { pdfPath, buffer: Buffer.from(pdfBuffer) };
+    console.log(`[AppelCotisationAV] PDF généré (buffer) — ${av.no_immatriculation || av.id} ${decl.periode}/${annee}`);
+    return Buffer.from(pdfBuffer);
   } catch (err) {
     if (browser) await browser.close().catch(() => {});
     console.error('[AppelCotisationAV] Erreur génération PDF:', err.message);

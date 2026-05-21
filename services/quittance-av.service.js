@@ -89,11 +89,14 @@ async function generateQuittanceAv(declaration, affiliation, code) {
   const annee   = decl.year || '';
   const datePaiement = decl.updatedAt ? new Date(decl.updatedAt).toLocaleDateString('fr-FR') : new Date().toLocaleDateString('fr-FR');
 
-  const prestations = [
-    av.is_assurance_maladie_active    ? `Assurance maladie ${(Number(av.assurance_maladie_percentage || 0.065) * 100).toFixed(1)}%`    : null,
-    av.is_risque_professionnel_active ? `Risque professionnel ${(Number(av.risque_professionnel_percentage || 0.06) * 100).toFixed(1)}%` : null,
-    av.is_vieillesse_active           ? `Vieillesse ${(Number(av.vieillesse_percentage || 0.065) * 100).toFixed(1)}%`                   : null,
-  ].filter(Boolean).join(' • ') || '—';
+  const prestationsList = [
+    av.is_assurance_maladie_active    ? `Assurance maladie — ${(Number(av.assurance_maladie_percentage || 0.065) * 100).toFixed(1)} %`    : null,
+    av.is_risque_professionnel_active ? `Risque professionnel — ${(Number(av.risque_professionnel_percentage || 0.06) * 100).toFixed(1)} %` : null,
+    av.is_vieillesse_active           ? `Vieillesse — ${(Number(av.vieillesse_percentage || 0.065) * 100).toFixed(1)} %`                   : null,
+  ].filter(Boolean);
+  const prestations = prestationsList.length
+    ? prestationsList.map((p) => `<div style="white-space:nowrap">${p}</div>`).join('')
+    : '—';
 
   const html = `<!DOCTYPE html>
 <html lang="fr">
@@ -185,8 +188,8 @@ async function generateQuittanceAv(declaration, affiliation, code) {
         <td style="text-align:right;font-weight:bold">${montant} GNF</td>
       </tr>
       <tr>
-        <td style="padding-bottom:10px">PRESTATIONS SOUSCRITES</td>
-        <td style="text-align:right">${prestations}</td>
+        <td style="padding-bottom:10px;vertical-align:top">PRESTATIONS SOUSCRITES</td>
+        <td style="text-align:right;vertical-align:top;line-height:1.7">${prestations}</td>
       </tr>
       <tr>
         <td style="padding-bottom:10px">MONTANT PAYÉ</td>

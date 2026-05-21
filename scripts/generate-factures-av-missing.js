@@ -12,14 +12,17 @@ require('dotenv').config();
 
 const path = require('path');
 const fs   = require('fs');
-const { Op } = require('sequelize');
 
 const dbPath    = path.join(__dirname, '..', 'db');
 const sequelize = require(path.join(dbPath, 'db.connection'));
 
-const AffiliationVolontaire       = require(path.join(dbPath, 'affiliation-volontaire', 'model'));
+const AffiliationVolontaire            = require(path.join(dbPath, 'affiliation-volontaire', 'model'));
 const DeclarationAffiliationVolontaire = require(path.join(dbPath, 'declaration_affiliation_volontaire', 'model'));
-const { generateAppelCotisationAv } = require(path.join(__dirname, '..', 'services', 'appel-cotisation-av.service'));
+const { generateAppelCotisationAv }    = require(path.join(__dirname, '..', 'services', 'appel-cotisation-av.service'));
+
+const ROOT_DIR = path.join(__dirname, '..');
+const DOCS_DIR = path.join(ROOT_DIR, 'document', 'docs');
+if (!fs.existsSync(DOCS_DIR)) fs.mkdirSync(DOCS_DIR, { recursive: true });
 
 const DRY_RUN = process.env.DRY_RUN === '1';
 const AV_ID   = process.env.AV_ID ? parseInt(process.env.AV_ID, 10) : null;
@@ -95,9 +98,12 @@ async function main() {
         }
 
         try {
-          const { pdfPath } = await generateAppelCotisationAv(declRaw, avRaw);
+          const buffer   = await generateAppelCotisationAv(declRaw, avRaw);
+          const fileName = `appel-cotisation-av-${avRaw.no_immatriculation || avRaw.id}-${declRaw.periode}-${declRaw.year}.pdf`;
+          const pdfPath  = path.join(DOCS_DIR, fileName);
+          fs.writeFileSync(pdfPath, buffer);
           await decl.update({ facture_path: pdfPath });
-          console.log(`${label} → ✅ ${path.basename(pdfPath)}`);
+          console.log(`${label} → ✅ ${fileName}`);
           totalOk++;
         } catch (err) {
           console.error(`${label} → ❌ ${err.message}`);

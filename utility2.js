@@ -541,6 +541,49 @@ async function exportPaiement(data) {
   return buildExcelReport(spec, data, 'Archive_des_paiements');
 }
 
+const MOIS_FR = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+
+/** Envoi email notification nouvel appel à cotisation AV. */
+async function sendMailAppelCotisationAv(affiliation, declaration) {
+  const to = affiliation?.email;
+  if (!transporter || !to) return;
+
+  const prenom = affiliation.prenom ?? '';
+  const nom    = affiliation.nom    ?? '';
+  const periodeIdx = parseInt(declaration.periode, 10) - 1;
+  const periodeLabel = (MOIS_FR[periodeIdx] ?? declaration.periode) + ' ' + declaration.year;
+  const portalUrl = process.env.AV_PORTAL_URL || 'https://compte.cnss.gov.gn';
+  const logoUrl   = 'https://firebasestorage.googleapis.com/v0/b/guicart-1581b.appspot.com/o/restoImg%2FCNSS.jpg?alt=media&token=bc7160b0-c2aa-4e1c-afe5-4d1d590dd52f';
+
+  try {
+    await transporter.sendMail({
+      from: `"Notification CNSS" <${user_email_name}>`,
+      to,
+      subject: `CNSS — Appel à cotisation ${periodeLabel}`,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto">
+          <img src="${logoUrl}" width="200" alt="CNSS" style="display:block;margin-bottom:20px"/>
+          <p>Bonjour Monsieur <strong>${prenom} ${nom}</strong>,</p>
+          <p>Un nouveau document a été mis à disposition dans votre espace personnel.</p>
+          <p>Connectez vous à votre espace en cliquant sur le lien ci-dessous :</p>
+          <p style="margin:20px 0">
+            <a href="${portalUrl}" style="background:#006400;color:#fff;padding:10px 20px;text-decoration:none;border-radius:4px">
+              Accéder à mon espace
+            </a>
+          </p>
+          <p style="color:#555;font-size:13px">Bien cordialement,<br/><strong>La CNSS</strong></p>
+          <hr style="border:none;border-top:1px solid #ddd;margin-top:30px"/>
+          <p style="font-size:11px;color:#999;text-align:center">
+            Caisse Nationale de Sécurité Sociale, Kouléwondy - Kaloum BP 138<br/>
+            www.cnss.gov.gn | Tél : 625 56 56 16
+          </p>
+        </div>`,
+    });
+  } catch (err) {
+    console.error('[utility2] sendMailAppelCotisationAv:', err.message);
+  }
+}
+
 module.exports = {
   genereQuittance,
   sendMailSuccesfulPaiement,
@@ -552,6 +595,7 @@ module.exports = {
   sendComptePayeurMail,
   sendMailEmployeurValidation,
   sendMailAfflitionVolonValidation,
+  sendMailAppelCotisationAv,
   sendMailCarteAssure,
   getQuittusFile,
   getEmployeHisExcelFile,

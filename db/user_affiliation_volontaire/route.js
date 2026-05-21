@@ -501,7 +501,7 @@ router.get('/declarations/:id/status', utility.AVToken, async (req, res) => {
   }
 });
 
-// GET declarations/:id/facture — retourne le PDF appel à cotisation (regénère si absent)
+// GET declarations/:id/facture — génère et retourne le PDF appel à cotisation (buffer uniquement, comme quittance)
 router.get('/declarations/:id/facture', utility.AVToken, async (req, res) => {
   try {
     const affiliationVolontaireId = req.user.affiliationVolontaireId;
@@ -517,18 +517,14 @@ router.get('/declarations/:id/facture', utility.AVToken, async (req, res) => {
     const declRaw = decl.get ? decl.get({ plain: true }) : decl;
     const avRaw   = affiliation.get ? affiliation.get({ plain: true }) : affiliation;
 
-    const { pdfPath, buffer } = await generateAppelCotisationAv(declRaw, avRaw);
-
-    if (!decl.facture_path || decl.facture_path !== pdfPath) {
-      decl.update({ facture_path: pdfPath }).catch(() => {});
-    }
+    const pdfBuffer = await generateAppelCotisationAv(declRaw, avRaw);
 
     const filename = `appel-cotisation-av-${avRaw.no_immatriculation || avRaw.id}-${declRaw.periode}-${declRaw.year}.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
     res.setHeader('Content-Security-Policy', 'frame-ancestors *');
-    res.setHeader('Content-Length', buffer.length);
-    return res.send(buffer);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    return res.send(pdfBuffer);
   } catch (error) {
     console.error('[AV GET declarations facture]', error);
     return res.status(500).json({ message: 'Erreur lors de la génération du PDF' });

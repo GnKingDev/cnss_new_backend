@@ -5,6 +5,7 @@
 const AffiliationVolontaire = require('../affiliation-volontaire/model');
 const DeclarationAffiliationVolontaire = require('./model');
 const sessionService = require('../../services/session.service');
+const { sendMailAppelCotisationAv } = require('../../utility2');
 
 const MONTHS_BACK = 12;
 
@@ -69,11 +70,10 @@ async function ensureDeclarationsForAffiliation(affiliationVolontaireId) {
     created++;
 
     if (wasCreated) {
-      const { generateAppelCotisationAv } = require('../../services/appel-cotisation-av.service');
       const declRaw = row.get ? row.get({ plain: true }) : row;
-      generateAppelCotisationAv(declRaw, affRaw)
-        .then(({ pdfPath }) => row.update({ facture_path: pdfPath }).catch(() => {}))
-        .catch((e) => console.error('[EnsureDecl] Erreur génération appel cotisation AV:', e.message));
+      sendMailAppelCotisationAv(affRaw, declRaw).catch((e) =>
+        console.error('[EnsureDecl] Erreur envoi mail appel cotisation:', e.message)
+      );
     }
 
     if (sessionService.isAvailable()) {
