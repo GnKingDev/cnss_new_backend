@@ -226,6 +226,38 @@ router.post('/signOut', utility.VerifyTokenFlexibleAV, async (req, res) => {
   }
 });
 
+// PATCH contact — mise à jour email et/ou téléphone de l'affilié connecté
+router.patch('/contact', utility.AVToken, async (req, res) => {
+  try {
+    const affiliationVolontaireId = req.user.affiliationVolontaireId;
+    if (!affiliationVolontaireId) return res.status(403).json({ message: 'Affiliation non associée à ce compte' });
+
+    const { email, phone_number } = req.body;
+    if (!email && !phone_number) return res.status(400).json({ message: 'Au moins un champ (email ou téléphone) est requis' });
+
+    const updates = {};
+    if (email) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email.trim())) return res.status(400).json({ message: 'Email invalide' });
+      updates.email = email.trim().toLowerCase();
+    }
+    if (phone_number) {
+      const phone = String(phone_number).replace(/\s/g, '');
+      if (!/^\d{8,12}$/.test(phone)) return res.status(400).json({ message: 'Numéro de téléphone invalide' });
+      updates.phone_number = phone;
+    }
+
+    const affiliation = await AffiliationVolontaire.findByPk(affiliationVolontaireId);
+    if (!affiliation) return res.status(404).json({ message: 'Affiliation non trouvée' });
+
+    await affiliation.update(updates);
+    return res.status(200).json({ message: 'Coordonnées mises à jour', email: affiliation.email, phone_number: affiliation.phone_number });
+  } catch (error) {
+    console.error('[AV PATCH contact]', error);
+    return res.status(500).json({ message: 'Erreur interne du serveur' });
+  }
+});
+
 // ============================================
 // 2b. PAGE ACCUEIL — affiliation du connecté
 // ============================================
