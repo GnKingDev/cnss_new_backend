@@ -85,52 +85,43 @@ const utility2 = {
     }
   },
 
-  // Send OTP by SMS (using SMS API)
+  // Envoi OTP par SMS via smspromtngn.com (MTN Guinée)
   sendOptCode: async (code, phone_number) => {
     if (!phone_number) {
-      console.warn('No phone number provided for OTP');
+      console.warn('[SMS OTP] Numéro de téléphone manquant');
       return false;
     }
-
+    if (!process.env.smskey) {
+      console.warn('[SMS OTP] smskey non configuré — code OTP (dev):', code);
+      return false;
+    }
     try {
-      // Option 1: Using SMS API (smspromtngn.com)
-      if (process.env.SMS_API_URL && process.env.SMS_API_KEY) {
-        await axios.post(process.env.SMS_API_URL, {
-          to: phone_number,
-          message: `Votre code OTP CNSS est: ${code}. Valide 5 minutes.`
-        }, {
-          headers: {
-            'Authorization': `Bearer ${process.env.SMS_API_KEY}`,
-            'Content-Type': 'application/json'
-          }
-        });
+      // Normalise le numéro : ajoute +224 si pas déjà présent
+      const contact = String(phone_number).startsWith('+')
+        ? phone_number
+        : `+224${String(phone_number).replace(/^00224/, '')}`;
+
+      const response = await fetch('https://api.smspromtngn.com/v1/messages/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.smskey}`,
+        },
+        body: JSON.stringify({
+          sender:  'CNSS',
+          message: `Votre code OTP CNSS est : ${code}. Valide 5 minutes.`,
+          contact,
+        }),
+      });
+      if (response.ok) {
+        console.log(`[SMS OTP] Envoyé vers ${contact}`);
         return true;
       }
-
-      // Option 2: Using Orange SMS API
-      if (process.env.ORANGE_SMS_API_URL && process.env.ORANGE_SMS_API_KEY) {
-        await axios.post(process.env.ORANGE_SMS_API_URL, {
-          outboundSMSMessageRequest: {
-            address: `tel:${phone_number}`,
-            senderAddress: process.env.SMS_SENDER || 'CNSS',
-            outboundSMSTextMessage: {
-              message: `Votre code OTP CNSS est: ${code}. Valide 5 minutes.`
-            }
-          }
-        }, {
-          headers: {
-            'Authorization': `Bearer ${process.env.ORANGE_SMS_API_KEY}`,
-            'Content-Type': 'application/json'
-          }
-        });
-        return true;
-      }
-
-      // Fallback: log to console (for development)
-      console.log(`OTP Code for ${phone_number}: ${code}`);
-      return true;
+      const body = await response.text();
+      console.warn(`[SMS OTP] Échec ${response.status}:`, body);
+      return false;
     } catch (error) {
-      console.error('Error sending OTP SMS:', error);
+      console.error('[SMS OTP] Erreur:', error.message);
       return false;
     }
   },

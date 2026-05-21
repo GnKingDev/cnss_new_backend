@@ -11,6 +11,31 @@ const utility2 = require('../users/utility2');
 const sessionService = require('../../services/session.service');
 const { ensureDeclarationsForAffiliation, getYearMonthList, MONTHS_BACK } = require('../declaration_affiliation_volontaire/ensure-declarations');
 
+// Envoi OTP par SMS via smspromtngn.com (MTN Guinée) — même implémentation que cnss_backend/utility.js
+function sendSmsOtpAv(code, phone_number) {
+  if (!phone_number) return;
+  const contact = String(phone_number).startsWith('+224')
+    ? phone_number
+    : `+224${phone_number}`;
+  fetch('https://api.smspromtngn.com/v1/messages/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${process.env.smskey}`,
+    },
+    body: JSON.stringify({
+      sender:  'CNSS GUINEE',
+      message: `Votre code de validation est de : ${code} qui expire dans 5 minutes`,
+      contact,
+    }),
+  })
+    .then(async (res) => {
+      if (!res.ok) console.warn('[AV SMS OTP] non envoyé:', res.status, await res.text());
+      else console.log('[AV SMS OTP] envoyé vers', contact);
+    })
+    .catch((err) => console.error('[AV SMS OTP] erreur:', err.message));
+}
+
 // Helper: retirer champs sensibles pour les réponses
 const sanitizeAvUser = (user) => {
   if (!user) return null;
@@ -68,7 +93,7 @@ router.post('/login', async (req, res) => {
     await utility.setLoginOtpAv(userAv.id, otpCode);
 
     if (av && av.email) await utility2.sendOptByMail(otpCode, av.email);
-    if (av && av.phone_number) await utility2.sendOptCode(otpCode, av.phone_number);
+    if (av && av.phone_number) sendSmsOtpAv(otpCode, av.phone_number);
 
     const tempPayload = {
       id: userAv.id,
@@ -158,7 +183,7 @@ router.post('/resend_otp', utility.otpVerifyTokenAV, async (req, res) => {
     await utility.setLoginOtpAv(userAv.id, otpCode);
     const av = userAv.affiliationVolontaire;
     if (av && av.email) await utility2.sendOptByMail(otpCode, av.email);
-    if (av && av.phone_number) await utility2.sendOptCode(otpCode, av.phone_number);
+    if (av && av.phone_number) sendSmsOtpAv(otpCode, av.phone_number);
     return res.status(200).json({ message: 'Code renvoyé' });
   } catch (error) {
     console.error('[AV resend_otp]', error);
@@ -778,7 +803,7 @@ router.post('/verify_imma_send_otp', async (req, res) => {
       await userAv.save();
     }
     const otpCode = utility2.generateOtpCode(userAv.otp_secret);
-    if (av.phone_number) await utility2.sendOptCode(otpCode, av.phone_number);
+    if (av.phone_number) sendSmsOtpAv(otpCode, av.phone_number);
     if (av.email) await utility2.sendOptByMail(otpCode, av.email);
 
     const token = utility.generateAvToken(
