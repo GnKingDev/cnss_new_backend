@@ -76,11 +76,12 @@ function fmt(n) {
 
 /**
  * Construit les lignes du tableau des branches actives.
- * @param {object} av     - instance plain AffiliationVolontaire
- * @param {number} plafond - revenu mensuel soumis à cotisation
+ * @param {object} av      - instance plain AffiliationVolontaire
+ * @param {number} plafond - revenu mensuel soumis à cotisation (plafond borné)
+ * @param {number} nbMois  - nombre de mois du trimestre (3 par défaut)
  * @returns {{ rows: string }}
  */
-function buildBranchesTable(av, plafond) {
+function buildBranchesTable(av, plafond, nbMois = 3) {
   const BRANCHES = [
     {
       key:   'is_assurance_maladie_active',
@@ -102,7 +103,7 @@ function buildBranchesTable(av, plafond) {
   let rows = '';
   for (const b of BRANCHES) {
     if (!av[b.key]) continue;
-    const montant = Math.round(plafond * b.rate);
+    const montant = Math.round(plafond * b.rate * nbMois);
     rows += `
       <tr>
         <td style="padding:6px 8px">${b.label}</td>
