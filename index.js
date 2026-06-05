@@ -150,6 +150,8 @@ app.use('/quittances', quittanceRoutes);
 app.use('/adhesions', adhesionRoutes);
 app.use('/api/v1/affiliation-volontaire', affiliationVolontaireFullRoutes); // route.full.js — simulation + request_affiliation_volontaire
 app.use('/api/v1/affiliation-volontaire', affiliationVolontaireRoutes);    // route.js — CRUD admin
+app.use('/api/v1/affiliationVolontaire', affiliationVolontaireFullRoutes); // alias camelCase
+app.use('/api/v1/affiliationVolontaire', affiliationVolontaireRoutes);     // alias camelCase
 app.use('/affiliation-volontaire', affiliationVolontaireFullRoutes);        // rétrocompatibilité
 app.use('/affiliation-volontaire', affiliationVolontaireRoutes);            // rétrocompatibilité
 app.use('/api/affiliations-volontaires', affiliationVolontaireFullRoutes);
