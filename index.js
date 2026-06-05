@@ -101,6 +101,7 @@ app.use('/api/pays', paysRoutes);
 app.use('/api/v1/prefecture', prefectureRoutes); // Updated to match documentation
 app.use('/api/prefectures', prefectureRoutes); // Keep for backward compatibility
 app.use('/api/activities', activityRoutes);
+app.use('/api/v1/branche', brancheRoutes);
 app.use('/api/branches', brancheRoutes);
 app.use('/api/banques', banqueRoutes);
 app.use('/api/v1/user', usersRoutes); // Updated to match documentation

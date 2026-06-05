@@ -12,6 +12,15 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.get('/get_all_branches', async (req, res) => {
+  try {
+    const branches = await Branche.findAll({ order: [['name', 'ASC']] });
+    res.json({ success: true, data: branches });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // GET branche by id
 router.get('/:id', async (req, res) => {
   try {
