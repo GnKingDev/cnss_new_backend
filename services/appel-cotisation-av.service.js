@@ -152,8 +152,9 @@ async function generateAppelCotisationAv(declaration, affiliation) {
 
   const periodeLabel = decl.periode ?? '';
   const annee        = decl.year ?? '';
-  const revenuAnnuel = Number(decl.revenu_annuel || av.revenu_annuel || 0);
-  const plafond      = getPlafondMensuel(revenuAnnuel);
+  const revenuAnnuel  = Number(decl.revenu_annuel || av.revenu_annuel || 0);
+  const revenuMensuel = Math.round(revenuAnnuel / 12);
+  const plafond       = getPlafondMensuel(revenuAnnuel);
   const montantDu    = Number(decl.montant_cotisation || 0);
 
   const { rows: brancheRows } = buildBranchesTable(av, plafond, montantDu);
@@ -268,7 +269,7 @@ async function generateAppelCotisationAv(declaration, affiliation) {
         </tr>
         <tr>
           <td style="padding:5px 8px">Revenu mensuel</td>
-          <td style="text-align:right;padding:5px 8px">${fmt(plafond)} GNF</td>
+          <td style="text-align:right;padding:5px 8px">${fmt(revenuMensuel)} GNF</td>
         </tr>
         <tr style="background:#fffbe6">
           <td style="padding:5px 8px;font-weight:bold">Plafond soumis à cotisation</td>

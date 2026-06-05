@@ -54,6 +54,17 @@ function periodeLabel(periode) {
   return periode ?? '—';
 }
 
+/** Code court du trimestre pour le numéro de quittance (sans accents ni tirets). */
+function periodeCode(periode) {
+  const map = {
+    'Jan-Fév-Mar': 'T1',
+    'Avr-Mai-Jun': 'T2',
+    'Jul-Aoû-Sep': 'T3',
+    'Oct-Nov-Déc': 'T4',
+  };
+  return map[periode] ?? (periode || '').replace(/[^a-zA-Z0-9]/g, '');
+}
+
 /** Libellé méthode de paiement */
 function methodLabel(payment_method) {
   if (!payment_method) return 'Mobile Money';
@@ -148,7 +159,7 @@ async function generateQuittanceAv(declaration, affiliation, code) {
     <tbody>
       <tr>
         <td style="width:30%;padding-bottom:10px;font-weight:bold">N° QUITTANCE :</td>
-        <td>${av.no_immatriculation || ''}${decl.periode || ''}${annee}</td>
+        <td>${av.no_immatriculation || ''}-${periodeCode(decl.periode || '')}-${annee}</td>
       </tr>
       <tr>
         <td style="padding-bottom:10px;font-weight:bold">N° IMMATRICULATION :</td>
