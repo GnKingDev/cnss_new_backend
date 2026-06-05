@@ -23,9 +23,9 @@ const DeclarationAffiliationVolontaire = sequelize.define('declaration_affiliati
     comment: 'Année (ex. 2024)'
   },
   periode: {
-    type: DataTypes.STRING(2),
+    type: DataTypes.STRING(20),
     allowNull: false,
-    comment: 'Mois "01" à "12"'
+    comment: 'Trimestre ex: "Jan-Fév-Mar"'
   },
   montant_cotisation: {
     type: DataTypes.BIGINT,

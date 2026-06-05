@@ -40,9 +40,9 @@ const QuittanceAffiliationVolontaire = sequelize.define('quittance_affiliation_v
     defaultValue: 0
   },
   periode: {
-    type: DataTypes.STRING(2),
+    type: DataTypes.STRING(20),
     allowNull: true,
-    comment: 'Mois "01" à "12"'
+    comment: 'Trimestre ex: "Jan-Fév-Mar"'
   },
   year: {
     type: DataTypes.INTEGER,

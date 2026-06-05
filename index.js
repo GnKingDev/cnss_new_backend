@@ -275,33 +275,19 @@ app.get('/health', async (req, res) => {
 });
 
 // Sync affiliation_volontaire — alter désactivé (table à 64 index max atteint)
+// Sync séquentiel des tables AV (FK entre declaration → quittance → deadlock si parallèle)
 const AffiliationVolontaireModel = require('./db/affiliation-volontaire/model');
-AffiliationVolontaireModel.sync()
-  .then(() => console.log('✅ affiliation_volontaire table synced'))
-  .catch((err) => console.error('❌ affiliation_volontaire sync error:', err.message));
-
-// Sync declaration_affiliation_volontaire (ajout colonnes Djomy)
-DeclarationAffiliationVolontaireModel.sync({ alter: true })
-  .then(() => console.log('✅ declaration_affiliation_volontaire table synced'))
-  .catch((err) => console.error('❌ declaration_affiliation_volontaire sync error:', err.message));
-
-// Sync quittance_affiliation_volontaire
 const QuittanceAvModel = require('./db/quittance_affiliation_volontaire/model');
-QuittanceAvModel.sync({ alter: true })
-  .then(() => console.log('✅ quittance_affiliation_volontaire table synced'))
-  .catch((err) => console.error('❌ quittance_affiliation_volontaire sync error:', err.message));
-
-// Sync reclamation_demandes (ajout colonne cotisation_employeur_id)
 const ReclamationDemandeModel = require('./db/reclamation/model');
-ReclamationDemandeModel.sync({ alter: true })
-  .then(() => console.log('✅ reclamation_demandes table synced'))
-  .catch((err) => console.error('❌ reclamation_demandes sync error:', err.message));
-
-// Sync demande_acces_employe
 const DemandeAccesEmployeModel = require('./db/demande-acces-employe/model');
-DemandeAccesEmployeModel.sync({ alter: true })
+
+AffiliationVolontaireModel.sync()
+  .then(() => { console.log('✅ affiliation_volontaire table synced'); return DeclarationAffiliationVolontaireModel.sync({ alter: true }); })
+  .then(() => { console.log('✅ declaration_affiliation_volontaire table synced'); return QuittanceAvModel.sync({ alter: true }); })
+  .then(() => { console.log('✅ quittance_affiliation_volontaire table synced'); return ReclamationDemandeModel.sync({ alter: true }); })
+  .then(() => { console.log('✅ reclamation_demandes table synced'); return DemandeAccesEmployeModel.sync({ alter: true }); })
   .then(() => console.log('✅ demande_acces_employe table synced'))
-  .catch((err) => console.error('❌ demande_acces_employe sync error:', err.message));
+  .catch((err) => console.error('❌ AV sync error:', err.message));
 
 // Start server
 app.listen(PORT, () => {
@@ -365,27 +351,46 @@ function startPenalitesCron() {
 }
 
 /** Au démarrage : génération automatique des déclarations pour tous les affiliés volontaires (cron au lancement). */
+/**
+ * Cron déclarations trimestrielles AV.
+ * — 1er run immédiat au démarrage (rattrapage)
+ * — puis toutes les 24h (rattrapage nouveaux affiliés validés)
+ * — le 1er jour de chaque trimestre le run du matin génère les nouvelles déclarations pour tous
+ * Désactiver : ENABLE_AV_DECLARATIONS_CRON=false
+ * Intervalle : AV_DECLARATIONS_CRON_INTERVAL_MS (défaut 86400000 = 24h)
+ */
 function runAvDeclarationsCron() {
-  const run = async () => {
-    try {
-      const AffiliationVolontaire = require('./db/affiliation-volontaire/model');
-      const { ensureDeclarationsForAffiliation } = require('./db/declaration_affiliation_volontaire/ensure-declarations');
-      await sequelize.authenticate();
-      const affiliations = await AffiliationVolontaire.findAll({ attributes: ['id'], order: [['id', 'ASC']] });
-      let totalCreated = 0;
-      for (const aff of affiliations) {
-        const row = aff.get ? aff.get({ plain: true }) : aff;
-        const { created } = await ensureDeclarationsForAffiliation(row.id);
-        totalCreated += created;
-      }
-      if (affiliations.length > 0) {
-        console.log('[AV cron] Déclarations auto :', affiliations.length, 'affilié(s),', totalCreated, 'ligne(s) créée(s)');
-      }
-    } catch (err) {
-      console.error('[AV cron] Erreur:', err.message);
+  if (process.env.ENABLE_AV_DECLARATIONS_CRON === 'false') {
+    console.log('[AV declarations cron] désactivé (ENABLE_AV_DECLARATIONS_CRON=false)');
+    return;
+  }
+  const { runEnsureDeclarationsAv } = require('./jobs/ensure-declarations-av');
+  const intervalMs = Math.max(60_000, parseInt(process.env.AV_DECLARATIONS_CRON_INTERVAL_MS || '86400000', 10) || 86_400_000);
+  let cycle = 0;
+  let jobEnCours = false;
+
+  const run = () => {
+    if (jobEnCours) {
+      console.warn('[AV declarations cron] tick ignoré — job précédent en cours');
+      return;
     }
+    cycle += 1;
+    const n = cycle;
+    jobEnCours = true;
+    console.log(`[AV declarations cron] ─── cycle #${n} ─── DÉBUT ${new Date().toISOString()}`);
+    runEnsureDeclarationsAv({ dryRun: false, enableLog: false })
+      .then((r) => {
+        if (r.totalCreated > 0 || r.errors?.length) {
+          console.log(`[AV declarations cron] cycle #${n} OK — affiliations=${r.totalAffiliations} créées=${r.totalCreated} erreurs=${r.errors?.length ?? 0} (${r.durationMs}ms)`);
+        }
+      })
+      .catch((err) => console.error(`[AV declarations cron] cycle #${n} ERREUR:`, err.message))
+      .finally(() => { jobEnCours = false; });
   };
+
   setImmediate(run);
+  setInterval(run, intervalMs);
+  console.log(`[AV declarations cron] ACTIF — 1er run immédiat puis toutes les ${intervalMs / 3600000}h`);
 }
 
 module.exports = app;

@@ -9,29 +9,27 @@ const affiliationUtility = require('../affiliation-volontaire/utility');
 const utility = require('./utility');
 const utility2 = require('../users/utility2');
 const sessionService = require('../../services/session.service');
-const { ensureDeclarationsForAffiliation, getYearMonthList, MONTHS_BACK } = require('../declaration_affiliation_volontaire/ensure-declarations');
+const { ensureDeclarationsForAffiliation, getQuarterList } = require('../declaration_affiliation_volontaire/ensure-declarations');
 
-// Envoi OTP par SMS via smspromtngn.com (MTN Guinée) — même implémentation que cnss_backend/utility.js
+// Envoi SMS via passeinfo.com — même API que cnss_backend/utility.js
 function sendSmsOtpAv(code, phone_number) {
   if (!phone_number) return;
-  const contact = String(phone_number).startsWith('+224')
-    ? phone_number
-    : `+224${phone_number}`;
-  fetch('https://api.smspromtngn.com/v1/messages/', {
+  fetch('https://api.passeinfo.com/v1/message/single_message', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${process.env.smskey}`,
+      'client-id': `${process.env.client_id}`,
+      'api-key':   `${process.env.api_key}`,
     },
     body: JSON.stringify({
-      sender:  'CNSS GUINEE',
-      message: `Votre code de validation est de : ${code} qui expire dans 5 minutes`,
-      contact,
+      senderName: 'CNSS GUINEE',
+      message:    `Votre code de validation est de : ${code} qui expire dans 5 minutes`,
+      contact:    `${phone_number}`,
     }),
   })
     .then(async (res) => {
       if (!res.ok) console.warn('[AV SMS OTP] non envoyé:', res.status, await res.text());
-      else console.log('[AV SMS OTP] envoyé vers', contact);
+      else console.log('[AV SMS OTP] envoyé vers', phone_number);
     })
     .catch((err) => console.error('[AV SMS OTP] erreur:', err.message));
 }
@@ -455,7 +453,8 @@ router.get('/declarations', utility.AVToken, async (req, res) => {
     const revenuAnnuelAff = Number(affRaw.revenu_annuel) || 0;
     const revenuMensuelAff = Number(affRaw.revenu_mensuel) || Math.round(revenuAnnuelAff / 12);
 
-    const toEnsure = getYearMonthList(MONTHS_BACK);
+    const refDate = affRaw.validated_date || affRaw.createdAt || new Date();
+    const toEnsure = getQuarterList(refDate);
     const key = (y, p) => `${y}-${p}`;
     const list = await DeclarationAffiliationVolontaire.findAll({
       where: { affiliationVolontaireId },

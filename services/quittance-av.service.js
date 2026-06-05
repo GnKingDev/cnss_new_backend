@@ -49,11 +49,9 @@ function resolveChromeExecutable() {
   return null;
 }
 
-/** Libellé du mois en français */
-function moisLabel(periode) {
-  const mois = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
-  const idx = parseInt(periode, 10) - 1;
-  return mois[idx] ?? periode;
+/** Libellé du trimestre — periode est déjà "Jan-Fév-Mar", "Avr-Mai-Jun", etc. */
+function periodeLabel(periode) {
+  return periode ?? '—';
 }
 
 /** Libellé méthode de paiement */
@@ -85,7 +83,7 @@ async function generateQuittanceAv(declaration, affiliation, code) {
   const av      = affiliation || {};
   const decl    = declaration || {};
   const montant = Number(decl.montant_cotisation || 0).toLocaleString('fr-FR');
-  const periode = moisLabel(decl.periode || '');
+  const periode = periodeLabel(decl.periode || '');
   const annee   = decl.year || '';
   const datePaiement = decl.updatedAt ? new Date(decl.updatedAt).toLocaleDateString('fr-FR') : new Date().toLocaleDateString('fr-FR');
 

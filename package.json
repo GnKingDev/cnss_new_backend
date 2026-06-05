@@ -13,6 +13,8 @@
     "reset-av-password": "node scripts/reset-av-password.js",
     "cron:penalites": "node jobs/generate-penalites.js",
     "cron:penalites:dry": "node jobs/generate-penalites.js --dry-run",
+    "cron:declarations-av": "node jobs/ensure-declarations-av.js",
+    "cron:declarations-av:dry": "node jobs/ensure-declarations-av.js --dry-run",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

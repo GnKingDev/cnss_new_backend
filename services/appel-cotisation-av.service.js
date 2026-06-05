@@ -15,6 +15,15 @@ const QRCode    = require('qrcode');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 
+const PLAFOND_MIN = 550000;
+const PLAFOND_MAX = 2500000;
+
+/** Même logique que affiliation-volontaire/utility.js → getPlafondMensuel */
+function getPlafondMensuel(revenu_annuel) {
+  const mensuel = Math.round(Number(revenu_annuel) / 12);
+  return Math.max(PLAFOND_MIN, Math.min(mensuel, PLAFOND_MAX));
+}
+
 const IMAGE_PATHS = {
   logo:     path.join(ROOT_DIR, 'CNSS.jpg'),
   simandou: path.join(ROOT_DIR, 'simandou.jpeg'),
@@ -26,10 +35,13 @@ const PUPPETEER_ARGS = [
   '--disable-extensions', '--disable-background-networking',
 ];
 
-const MOIS_LABELS = [
-  'JANVIER','FÉVRIER','MARS','AVRIL','MAI','JUIN',
-  'JUILLET','AOÛT','SEPTEMBRE','OCTOBRE','NOVEMBRE','DÉCEMBRE',
-];
+// Date limite de paiement : 20 du mois suivant la fin du trimestre
+const QUARTER_DATE_LIMITE = {
+  'Jan-Fév-Mar': (year) => `20/04/${year}`,
+  'Avr-Mai-Jun': (year) => `20/07/${year}`,
+  'Jul-Aoû-Sep': (year) => `20/10/${year}`,
+  'Oct-Nov-Déc': (year) => `20/01/${Number(year) + 1}`,
+};
 
 function readImageBase64(filePath) {
   try {
@@ -129,20 +141,17 @@ async function generateAppelCotisationAv(declaration, affiliation) {
   const av   = affiliation || {};
   const decl = declaration || {};
 
-  const periodeIdx   = parseInt(decl.periode, 10) - 1;
-  const periodeLabel = MOIS_LABELS[periodeIdx] ?? decl.periode ?? '';
+  const periodeLabel = decl.periode ?? '';
   const annee        = decl.year ?? '';
-  const plafond      = Number(decl.revenu_mensuel || av.plafond || 0);
-  const revenuAnnuel = Number(decl.revenu_annuel  || av.revenu_annuel || 0);
+  const revenuAnnuel = Number(decl.revenu_annuel || av.revenu_annuel || 0);
+  const plafond      = getPlafondMensuel(revenuAnnuel);
   const montantDu    = Number(decl.montant_cotisation || 0);
 
   const { rows: brancheRows } = buildBranchesTable(av, plafond);
 
-  // Date limite = 20 du mois suivant
-  const month      = parseInt(decl.periode, 10);
-  const nextMonth  = month === 12 ? 1 : month + 1;
-  const nextYear   = month === 12 ? Number(annee) + 1 : Number(annee);
-  const dateLimite = `20/${String(nextMonth).padStart(2, '0')}/${nextYear}`;
+  // Date limite = 20 du mois suivant la fin du trimestre
+  const dateLimiteFn = QUARTER_DATE_LIMITE[periodeLabel];
+  const dateLimite   = dateLimiteFn ? dateLimiteFn(annee) : `—`;
 
   const html = `<!DOCTYPE html>
 <html lang="fr">
