@@ -76,12 +76,15 @@ function fmt(n) {
 
 /**
  * Construit les lignes du tableau des branches actives.
- * @param {object} av      - instance plain AffiliationVolontaire
- * @param {number} plafond - revenu mensuel soumis à cotisation (plafond borné)
- * @param {number} nbMois  - nombre de mois du trimestre (3 par défaut)
+ * Le facteur est dérivé du montant total réel de la déclaration :
+ *   - trimestre plein  : factor ≈ 3   → cotisation × 3
+ *   - trimestre prorata: factor < 3   → cotisation proportionnelle aux jours
+ * @param {object} av           - instance plain AffiliationVolontaire
+ * @param {number} plafond      - plafond mensuel borné (550k–2500k GNF)
+ * @param {number} montantTotal - montant_cotisation réel de la déclaration
  * @returns {{ rows: string }}
  */
-function buildBranchesTable(av, plafond, nbMois = 3) {
+function buildBranchesTable(av, plafond, montantTotal) {
   const BRANCHES = [
     {
       key:   'is_assurance_maladie_active',
@@ -100,10 +103,15 @@ function buildBranchesTable(av, plafond, nbMois = 3) {
     },
   ];
 
+  // Calcul du facteur à partir du montant réel déclaré
+  const totalRate = BRANCHES.reduce((sum, b) => av[b.key] ? sum + b.rate : sum, 0);
+  const monthlyBase = plafond * totalRate;
+  const factor = monthlyBase > 0 ? montantTotal / monthlyBase : 3;
+
   let rows = '';
   for (const b of BRANCHES) {
     if (!av[b.key]) continue;
-    const montant = Math.round(plafond * b.rate * nbMois);
+    const montant = Math.round(plafond * b.rate * factor);
     rows += `
       <tr>
         <td style="padding:6px 8px">${b.label}</td>
@@ -148,7 +156,7 @@ async function generateAppelCotisationAv(declaration, affiliation) {
   const plafond      = getPlafondMensuel(revenuAnnuel);
   const montantDu    = Number(decl.montant_cotisation || 0);
 
-  const { rows: brancheRows } = buildBranchesTable(av, plafond);
+  const { rows: brancheRows } = buildBranchesTable(av, plafond, montantDu);
 
   // Date limite = 20 du mois suivant la fin du trimestre
   const dateLimiteFn = QUARTER_DATE_LIMITE[periodeLabel];
