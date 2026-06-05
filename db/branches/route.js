@@ -6,18 +6,18 @@ const Branche = require('./model');
 router.get('/', async (req, res) => {
   try {
     const branches = await Branche.findAll({ order: [['name', 'ASC']] });
-    res.json({ success: true, data: branches });
+    res.json(branches);
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
 router.get('/get_all_branches', async (req, res) => {
   try {
     const branches = await Branche.findAll({ order: [['name', 'ASC']] });
-    res.json({ success: true, data: branches });
+    res.json(branches);
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
