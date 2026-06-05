@@ -40,8 +40,8 @@ function computeSimulation(data) {
     revenu_annuel,
     revenu_mensuel,
     plafond,
-    cotisation,
-    montant_trimestriel: cotisation * 3
+    cotisation,  
+    montant_trimestriel: cotisation * 3 
   };
 }
 
