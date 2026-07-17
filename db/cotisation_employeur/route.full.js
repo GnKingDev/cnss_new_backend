@@ -24,6 +24,7 @@ const Employeur = require('../XYemployeurs/model');
 const document = require('../document/model');
 const employe = require('../employe/model');
 const { Op } = require('sequelize');
+const sequelize = require('../db.connection');
 const penaliteRetard = require('../penalites/penaliteRetardPaiement.util');
 
 const {
@@ -142,6 +143,7 @@ const IMPORT_LISTE_COLUMNS = {
 
 // ---------- Déclaration principale ----------
 router.post('/declare-periode', EmployeurToken, async (req, res) => {
+  const t = await sequelize.transaction();
   try {
     const data_cotisation_employeur = { ...req.body.cotisation_employeur };
     const data_declaration_employe = req.body.declaration_employe || [];
@@ -150,22 +152,25 @@ router.post('/declare-periode', EmployeurToken, async (req, res) => {
 
     const monthInfo = getMonthByName(data_cotisation_employeur.periode);
     if (!monthInfo) {
+      await t.rollback();
       return res.status(400).json({ message: 'Période invalide' });
     }
     data_cotisation_employeur.debut_echeance_principal = new Date(`${data_cotisation_employeur.year}-${monthInfo.code}-01`).toISOString();
     data_cotisation_employeur.fin_echeance_principal = calculerDates(data_cotisation_employeur.debut_echeance_principal).dateFinEchange;
 
-    if (data_cotisation_employeur.periode) { 
+    if (data_cotisation_employeur.periode) {
       if (await isPeriodeDeclared(data_cotisation_employeur.periode, data_cotisation_employeur.year, req.user.user_id)) {
+        await t.rollback();
         return res.status(400).json({ message: 'Cette période a déjà été déclarée' });
       }
     } else {
       if (await isTrimestreDeclared(data_cotisation_employeur.trimestre, data_cotisation_employeur.year, req.user.user_id)) {
+        await t.rollback();
         return res.status(400).json({ message: 'Ce trimestre est déjà déclaré' });
       }
     }
 
-    const Cemployeur = await cotisation_employeur.create(data_cotisation_employeur);
+    const Cemployeur = await cotisation_employeur.create(data_cotisation_employeur, { transaction: t });
 
     /**
      * Pénalité : pas d’insert dans `penalites` ici. Le cron (`jobs/generate-penalites.js`) est autonome :
@@ -177,57 +182,65 @@ router.post('/declare-periode', EmployeurToken, async (req, res) => {
       employeurId: req.user.user_id,
       cotisation_employeurId: Cemployeur.id
     }));
-    await Demploye.bulkCreate(declWithIds);
+    await Demploye.bulkCreate(declWithIds, { transaction: t });
 
     await paiement.create({
       cotisation_employeurId: Cemployeur.id,
       employeurId: req.user.user_id
-    });
+    }, { transaction: t });
 
     const fileName = data_cotisation_employeur.periode
       ? `Appel_retour_de_cotisation-${req.user.user_id}-${data_cotisation_employeur.periode}-${data_cotisation_employeur.year}-${generateUniqueCode(9)}`
       : `Appel_retour_de_cotisation-${req.user.user_id}-${data_cotisation_employeur.trimestre}-${data_cotisation_employeur.year}-${generateUniqueCode(9)}`;
 
-    const EmployeurRecord = await Employeur.findByPk(req.user.user_id);
+    const EmployeurRecord = await Employeur.findByPk(req.user.user_id, { transaction: t });
     const code = generateUniqueCode(9);
 
+    let pdfResult;
     try {
-      const pdfResult = await getFileAppelCotisation(fileName, Cemployeur, 'FACTURE', EmployeurRecord, code);
-      Cemployeur.facture_path = `/api/v1/docsx/${fileName}.pdf`;
-      await Cemployeur.save();
-      await document.create({
-        name: `Facture-${data_cotisation_employeur.periode || data_cotisation_employeur.trimestre}-${data_cotisation_employeur.year}`,
-        path: `/api/v1/docsx/${fileName}.pdf`,
-        employeurId: req.user.user_id,
-        code
-      });
-      const insertToOldb = await cotisation_employeur.findByPk(Cemployeur.id, { include: [{ model: Employeur, as: 'employeur' }] });
-      addDeclartionDebit(insertToOldb, `${data_cotisation_employeur.year}${monthInfo.code}`);
-      const pdfBase64 = pdfResult.buffer ? pdfResult.buffer.toString('base64') : null;
-      const prevPen = penaliteRetard.previewPenalitePourPeriode(
-        {
-          periode: data_cotisation_employeur.periode,
-          trimestre: data_cotisation_employeur.trimestre,
-          year: data_cotisation_employeur.year
-        },
-        Number(Cemployeur.total_branche ?? Cemployeur.total_cotisation) || 0,
-        new Date()
-      );
-      return res.status(200).json({
-        filePath: `${fileName}.pdf`,
-        pdfBase64: pdfBase64 || undefined,
-        is_penalite_applied: prevPen.k > 0 && prevPen.montantPenalite > 0,
-        penelite_amount: prevPen.montantPenalite,
-        mois_retard_paiement: prevPen.k,
-        date_limite_paiement: prevPen.dateLimitePaiement,
-        penalite_id: null
-      });
+      pdfResult = await getFileAppelCotisation(fileName, Cemployeur, 'FACTURE', EmployeurRecord, code);
     } catch (err) {
+      await t.rollback();
       console.error(err);
       appendTextToFile(err.message);
       return res.status(400).json({ message: 'Facture non générée, veuillez réessayer plus tard' });
     }
+
+    Cemployeur.facture_path = `/api/v1/docsx/${fileName}.pdf`;
+    await Cemployeur.save({ transaction: t });
+    await document.create({
+      name: `Facture-${data_cotisation_employeur.periode || data_cotisation_employeur.trimestre}-${data_cotisation_employeur.year}`,
+      path: `/api/v1/docsx/${fileName}.pdf`,
+      employeurId: req.user.user_id,
+      code
+    }, { transaction: t });
+
+    // Tout s'est bien passé : on valide la transaction avant les effets de bord (ancienne base, PDF base64...)
+    await t.commit();
+
+    const insertToOldb = await cotisation_employeur.findByPk(Cemployeur.id, { include: [{ model: Employeur, as: 'employeur' }] });
+    addDeclartionDebit(insertToOldb, `${data_cotisation_employeur.year}${monthInfo.code}`);
+    const pdfBase64 = pdfResult.buffer ? pdfResult.buffer.toString('base64') : null;
+    const prevPen = penaliteRetard.previewPenalitePourPeriode(
+      {
+        periode: data_cotisation_employeur.periode,
+        trimestre: data_cotisation_employeur.trimestre,
+        year: data_cotisation_employeur.year
+      },
+      Number(Cemployeur.total_branche ?? Cemployeur.total_cotisation) || 0,
+      new Date()
+    );
+    return res.status(200).json({
+      filePath: `${fileName}.pdf`,
+      pdfBase64: pdfBase64 || undefined,
+      is_penalite_applied: prevPen.k > 0 && prevPen.montantPenalite > 0,
+      penelite_amount: prevPen.montantPenalite,
+      mois_retard_paiement: prevPen.k,
+      date_limite_paiement: prevPen.dateLimitePaiement,
+      penalite_id: null
+    });
   } catch (error) {
+    if (!t.finished) await t.rollback();
     console.error(error);
     appendTextToFile(error.message);
     res.status(400).json({ message: error.message });
@@ -494,6 +507,7 @@ router.post('/complementaire_facture', EmployeurToken, async (req, res) => {
 });
 
 router.post('/complementaire_declaration', EmployeurToken, async (req, res) => {
+  const t = await sequelize.transaction();
   try {
     const data_cotisation_employeur = { ...req.body.cotisation_employeur };
     const data_declaration_employe = req.body.declaration_employe || [];
@@ -501,50 +515,60 @@ router.post('/complementaire_declaration', EmployeurToken, async (req, res) => {
     data_cotisation_employeur.employeurId = req.user.user_id;
 
     const monthInfo = getMonthByName(data_cotisation_employeur.periode);
-    if (!monthInfo) return res.status(400).json({ message: 'Période invalide' });
+    if (!monthInfo) {
+      await t.rollback();
+      return res.status(400).json({ message: 'Période invalide' });
+    }
 
     data_cotisation_employeur.debut_echeance_principal = new Date(`${data_cotisation_employeur.year}-${monthInfo.code}-01`).toISOString();
     data_cotisation_employeur.fin_echeance_principal = calculerDates(data_cotisation_employeur.debut_echeance_principal).dateFinEchange;
     data_cotisation_employeur.motif = 'FACTURATION COMPLEMENTAIRE SUR PRINCIPAL';
 
-    const Cemployeur = await cotisation_employeur.create(data_cotisation_employeur);
+    const Cemployeur = await cotisation_employeur.create(data_cotisation_employeur, { transaction: t });
     const declWithIds = data_declaration_employe.map((el) => ({
       ...el,
       employeurId: req.user.user_id,
       cotisation_employeurId: Cemployeur.id
     }));
-    await Demploye.bulkCreate(declWithIds);
-    await paiement.create({ cotisation_employeurId: Cemployeur.id, employeurId: req.user.user_id });
+    await Demploye.bulkCreate(declWithIds, { transaction: t });
+    await paiement.create({ cotisation_employeurId: Cemployeur.id, employeurId: req.user.user_id }, { transaction: t });
 
     const fileName = data_cotisation_employeur.periode
       ? `Facture_complementaire-${req.user.user_id}-${data_cotisation_employeur.periode}-${data_cotisation_employeur.year}-${generateUniqueCode(9)}`
       : `Appel_retour_de_cotisation-${req.user.user_id}-${data_cotisation_employeur.trimestre}-${data_cotisation_employeur.year}-${generateUniqueCode(8)}`;
 
-    const EmployeurRecord = await Employeur.findByPk(req.user.user_id);
+    const EmployeurRecord = await Employeur.findByPk(req.user.user_id, { transaction: t });
     const code = generateUniqueCode(9);
 
+    let pdfResult;
     try {
-      const pdfResult = await getFileAppelCotisation(fileName, Cemployeur, 'FACTURE COMPLEMENTAIRE', EmployeurRecord, code);
-      Cemployeur.facture_path = `/api/v1/docsx/${fileName}.pdf`;
-      await Cemployeur.save();
-      await document.create({
-        name: `Facture complémentaire ${data_cotisation_employeur.periode}-${data_cotisation_employeur.year}`,
-        path: `/api/v1/docsx/${fileName}.pdf`,
-        employeurId: req.user.user_id,
-        code
-      });
-      const insertToOldb = await cotisation_employeur.findByPk(Cemployeur.id, { include: [{ model: Employeur, as: 'employeur' }] });
-      addDeclartionDebit(insertToOldb, `${data_cotisation_employeur.year}${monthInfo.code}`);
-      const pdfBase64 = pdfResult.buffer ? pdfResult.buffer.toString('base64') : null;
-      return res.status(200).json({
-        filePath: `${fileName}.pdf`,
-        pdfBase64: pdfBase64 || undefined
-      });
+      pdfResult = await getFileAppelCotisation(fileName, Cemployeur, 'FACTURE COMPLEMENTAIRE', EmployeurRecord, code);
     } catch (err) {
+      await t.rollback();
       console.error(err);
       return res.status(400).json({ message: 'Facture non générée, veuillez réessayer plus tard' });
     }
+
+    Cemployeur.facture_path = `/api/v1/docsx/${fileName}.pdf`;
+    await Cemployeur.save({ transaction: t });
+    await document.create({
+      name: `Facture complémentaire ${data_cotisation_employeur.periode}-${data_cotisation_employeur.year}`,
+      path: `/api/v1/docsx/${fileName}.pdf`,
+      employeurId: req.user.user_id,
+      code
+    }, { transaction: t });
+
+    await t.commit();
+
+    const insertToOldb = await cotisation_employeur.findByPk(Cemployeur.id, { include: [{ model: Employeur, as: 'employeur' }] });
+    addDeclartionDebit(insertToOldb, `${data_cotisation_employeur.year}${monthInfo.code}`);
+    const pdfBase64 = pdfResult.buffer ? pdfResult.buffer.toString('base64') : null;
+    return res.status(200).json({
+      filePath: `${fileName}.pdf`,
+      pdfBase64: pdfBase64 || undefined
+    });
   } catch (error) {
+    if (!t.finished) await t.rollback();
     console.error(error);
     appendTextToFile(error.message);
     res.status(400).json({ message: error.message });

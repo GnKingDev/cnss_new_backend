@@ -42,7 +42,9 @@ const isMultipartQuitus = (req) => req.method === 'POST' && req.originalUrl.incl
   req.headers['content-type'] && String(req.headers['content-type']).startsWith('multipart/form-data');
 const isMultipartAffiliationVolontaire = (req) => req.method === 'POST' && req.originalUrl.includes('/request_affiliation_volontaire') &&
   req.headers['content-type'] && String(req.headers['content-type']).startsWith('multipart/form-data');
-const skipBodyParse = (req) => isMultipartFamille(req) || isMultipartPrestation(req) || isMultipartReclamation(req) || isMultipartQuitus(req) || isMultipartAffiliationVolontaire(req);
+const isMultipartAccidentTravail = (req) => req.method === 'POST' && (req.originalUrl.includes('/accident_travail/demandes') || req.originalUrl.includes('/accident_travail/documents/')) &&
+  req.headers['content-type'] && String(req.headers['content-type']).startsWith('multipart/form-data');
+const skipBodyParse = (req) => isMultipartFamille(req) || isMultipartPrestation(req) || isMultipartReclamation(req) || isMultipartQuitus(req) || isMultipartAffiliationVolontaire(req) || isMultipartAccidentTravail(req);
 app.use((req, res, next) => {
   if (skipBodyParse(req)) return next();
   bodyParser.json({ limit: '10mb' })(req, res, next);
@@ -95,6 +97,7 @@ const reclamationRoutes = require('./db/reclamation/route');
 const correctionDirgaRoutes = require('./db/reclamation/route.correction');
 const quitusMenuRoutes = require('./db/quitus_menu/route');
 const immatriculationDirgaRoutes = require('./db/employe/route.immatriculation');
+const accidentTravailRoutes = require('./db/accident_travail/route');
 
 // API Routes
 app.use('/api/pays', paysRoutes);
@@ -168,6 +171,8 @@ app.use('/api/v1/immatriculation-dirga', immatriculationDirgaRoutes);
 app.use('/v1/immatriculation-dirga', immatriculationDirgaRoutes); // BO proxy
 app.use('/api/v1/quitus', quitusMenuRoutes);
 app.use('/v1/quitus', quitusMenuRoutes); // BO proxy: Vite supprime /api
+app.use('/api/v1/accident_travail', accidentTravailRoutes);
+app.use('/v1/accident_travail', accidentTravailRoutes); // BO proxy: Vite supprime /api
 
 // Servir les PDFs depuis document/docs — GET /api/v1/docsx/:filename.pdf
 app.get('/api/v1/docsx/:filename', (req, res) => {
@@ -283,13 +288,15 @@ const AffiliationVolontaireModel = require('./db/affiliation-volontaire/model');
 const QuittanceAvModel = require('./db/quittance_affiliation_volontaire/model');
 const ReclamationDemandeModel = require('./db/reclamation/model');
 const DemandeAccesEmployeModel = require('./db/demande-acces-employe/model');
+const AccidentTravailModel = require('./db/accident_travail/model');
 
 AffiliationVolontaireModel.sync()
   .then(() => { console.log('✅ affiliation_volontaire table synced'); return DeclarationAffiliationVolontaireModel.sync({ alter: true }); })
   .then(() => { console.log('✅ declaration_affiliation_volontaire table synced'); return QuittanceAvModel.sync({ alter: true }); })
   .then(() => { console.log('✅ quittance_affiliation_volontaire table synced'); return ReclamationDemandeModel.sync({ alter: true }); })
   .then(() => { console.log('✅ reclamation_demandes table synced'); return DemandeAccesEmployeModel.sync({ alter: true }); })
-  .then(() => console.log('✅ demande_acces_employe table synced'))
+  .then(() => { console.log('✅ demande_acces_employe table synced'); return AccidentTravailModel.sync({ alter: true }); })
+  .then(() => console.log('✅ accident_travail_demandes table synced'))
   .catch((err) => console.error('❌ AV sync error:', err.message));
 
 // Start server

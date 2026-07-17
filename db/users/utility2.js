@@ -108,7 +108,7 @@ const utility2 = {
           Authorization: `Bearer ${process.env.smskey}`,
         },
         body: JSON.stringify({
-          sender:  'CNSS',
+          sender:  'CNSS GUINEE',
           message: `Votre code OTP CNSS est : ${code}. Valide 5 minutes.`,
           contact,
         }),

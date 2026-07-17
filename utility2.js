@@ -314,6 +314,30 @@ async function sendMailAfflitionVolonValidation(to, affiliationVolontaire, passw
   }
 }
 
+/** Envoi email : demande d'accident de travail reçue par le BO — invite à soumettre les documents complémentaires (lien uuid). */
+async function sendMailAccidentTravailReceived(to, employeur, accidentTravail) {
+  if (!transporter || !to) return;
+  const emp = employeur || {};
+  const at = accidentTravail || {};
+  const logoUrl = 'https://firebasestorage.googleapis.com/v0/b/guicart-1581b.appspot.com/o/restoImg%2FCNSS.jpg?alt=media&token=bc7160b0-c2aa-4e1c-afe5-4d1d590dd52f';
+  const link = `https://compte.cnss.gov.gn/eadt/documents/${at.uuid}`;
+  try {
+    await transporter.sendMail({
+      from: `"Notification CNSS" <${user_email_name}>`,
+      to,
+      subject: `Réclamation Accident de Travail ${at.reference ?? ''} — Demande reçue`,
+      html: `<img src="${logoUrl}" width="500" height="200" alt="CNSS" />
+        <p>Bonjour,</p>
+        <p>Votre déclaration d'accident de travail <strong>${at.reference ?? ''}</strong> pour l'entreprise <strong>${emp.raison_sociale ?? ''}</strong> a été reçue par nos services.</p>
+        <p>Merci de bien vouloir joindre et soumettre les documents complémentaires nécessaires au traitement de votre dossier.</p>
+        <p><a href="${link}">Cliquez ici pour soumettre les documents</a></p>
+        <p style="color:red">NB : ce lien est personnel, ne le partagez pas.</p>`
+    });
+  } catch (err) {
+    console.error('[utility2] sendMailAccidentTravailReceived:', err.message);
+  }
+}
+
 /** Envoi de la carte d'assuré (PDF) par email. */
 async function sendMailCarteAssure(toEmail, employeName, pdfBuffer) {
   if (!transporter || !toEmail) {
@@ -595,6 +619,7 @@ module.exports = {
   sendComptePayeurMail,
   sendMailEmployeurValidation,
   sendMailAfflitionVolonValidation,
+  sendMailAccidentTravailReceived,
   sendMailAppelCotisationAv,
   sendMailCarteAssure,
   getQuittusFile,

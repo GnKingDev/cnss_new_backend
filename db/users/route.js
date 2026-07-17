@@ -328,6 +328,7 @@ router.post('/verify_imma_send_otp', async (req, res) => {
 
     // Generate OTP code using user's secret
     const otpCode = utility2.generateOtpCode(User.otp_secret);
+    console.log('[verify_imma_send_otp] OTP généré:', otpCode, '| pour identity:', immatriculation);
 
     if (User.role === 'employeur') {
       const employeur = await Employeur.findOne({ where: { no_immatriculation: immatriculation } });

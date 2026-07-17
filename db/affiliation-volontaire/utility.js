@@ -71,8 +71,8 @@ function computeSimulationFromAffiliation(affiliation) {
     revenu_mensuel,
     plafond,
     cotisation,
-    montant_trimestriel: cotisation * 3
-  };
+    montant_trimestriel: cotisation * 3 
+  }; 
 }
 
 /**
