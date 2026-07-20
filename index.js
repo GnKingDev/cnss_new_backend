@@ -146,7 +146,7 @@ app.use('/branches', brancheRoutes);
 app.use('/prefectures', prefectureRoutes);
 app.use('/employeurs', employeurRoutes);
 app.use('/employes', employeRoutes);
-app.use('/cotisations-employeur', cotisationEmployeurRoutes);
+app.use('/cotisations-employeur', cotisationEmployeurRoutes); 
 app.use('/paiements', paiementRoutes.router || paiementRoutes);
 app.use('/demandes', demandeRoutes);
 app.use('/quittances', quittanceRoutes);

@@ -90,7 +90,9 @@ router.post('/login', async (req, res) => {
     const otpCode = utility2.generateOtpCode(userAv.otp_secret);
     await utility.setLoginOtpAv(userAv.id, otpCode);
 
-    if (av && av.email) await utility2.sendOptByMail(otpCode, av.email);
+    if (av && av.email) {
+      utility2.sendOptByMail(otpCode, av.email).catch((err) => console.error('[AV login] Erreur envoi email OTP:', err.message));
+    }
     if (av && av.phone_number) sendSmsOtpAv(otpCode, av.phone_number);
 
     const tempPayload = {
@@ -180,7 +182,9 @@ router.post('/resend_otp', utility.otpVerifyTokenAV, async (req, res) => {
     const otpCode = utility2.generateOtpCode(userAv.otp_secret);
     await utility.setLoginOtpAv(userAv.id, otpCode);
     const av = userAv.affiliationVolontaire;
-    if (av && av.email) await utility2.sendOptByMail(otpCode, av.email);
+    if (av && av.email) {
+      utility2.sendOptByMail(otpCode, av.email).catch((err) => console.error('[AV resend_otp] Erreur envoi email OTP:', err.message));
+    }
     if (av && av.phone_number) sendSmsOtpAv(otpCode, av.phone_number);
     return res.status(200).json({ message: 'Code renvoyé' });
   } catch (error) {
@@ -835,7 +839,9 @@ router.post('/verify_imma_send_otp', async (req, res) => {
     }
     const otpCode = utility2.generateOtpCode(userAv.otp_secret);
     if (av.phone_number) sendSmsOtpAv(otpCode, av.phone_number);
-    if (av.email) await utility2.sendOptByMail(otpCode, av.email);
+    if (av.email) {
+      utility2.sendOptByMail(otpCode, av.email).catch((err) => console.error('[AV forgot_password] Erreur envoi email OTP:', err.message));
+    }
 
     const token = utility.generateAvToken(
       { id: userAv.id, user_identify: userAv.user_identify, affiliationVolontaireId: userAv.affiliationVolontaireId },
