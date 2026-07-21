@@ -144,14 +144,14 @@ router.post('/login', async (req, res) => {
       // Stocker le code 5 min en Redis pour verify_otp (évite refus si délai TOTP)
       await utility.setLoginOtp(user.id, otpCode);
 
-      // Send OTP by email
+      // Send OTP by email (non bloquant)
       if (user.email) {
-        await utility2.sendOptByMail(otpCode, user.email);
+        utility2.sendOptByMail(otpCode, user.email).catch((err) => console.error('[login] Erreur envoi email OTP:', err.message));
       }
 
-      // Send OTP by SMS
+      // Send OTP by SMS (non bloquant)
       if (user.phone_number) {
-        await utility2.sendOptCode(otpCode, user.phone_number);
+        utility2.sendOptCode(otpCode, user.phone_number).catch((err) => console.error('[login] Erreur envoi SMS OTP:', err.message));
       }
 
       // Generate temporary token (30 min)
@@ -287,10 +287,10 @@ router.post('/resend_otp', utility.otpVerifyToken, async (req, res) => {
     await utility.setLoginOtp(user.id, otpCode);
 
     if (user.email) {
-      await utility2.sendOptByMail(otpCode, user.email);
+      utility2.sendOptByMail(otpCode, user.email).catch((err) => console.error('[resend_otp] Erreur envoi email OTP:', err.message));
     }
     if (user.phone_number) {
-      await utility2.sendOptCode(otpCode, user.phone_number);
+      utility2.sendOptCode(otpCode, user.phone_number).catch((err) => console.error('[resend_otp] Erreur envoi SMS OTP:', err.message));
     }
 
     return res.status(200).json({ message: 'Code renvoyé' });
@@ -336,12 +336,12 @@ router.post('/verify_imma_send_otp', async (req, res) => {
         return res.status(400).json({ message: 'Employeur non trouvé' });
       }
 
-      // Send OTP by SMS and email
+      // Send OTP by SMS and email (non bloquant)
       if (User.phone_number) {
-        await utility2.sendOptCode(otpCode, User.phone_number);
+        utility2.sendOptCode(otpCode, User.phone_number).catch((err) => console.error('[verify_imma_send_otp] Erreur envoi SMS OTP:', err.message));
       }
       if (User.email) {
-        await utility2.sendOptByMail(otpCode, User.email);
+        utility2.sendOptByMail(otpCode, User.email).catch((err) => console.error('[verify_imma_send_otp] Erreur envoi email OTP:', err.message));
       }
     } else {
       // For employe
@@ -354,10 +354,10 @@ router.post('/verify_imma_send_otp', async (req, res) => {
         return res.status(400).json({ message: 'Veuillez contacter votre employeur pour mettre à jour votre numéro de téléphone.' });
       }
 
-      // Send OTP by SMS
-      await utility2.sendOptCode(otpCode, employe.phone_number);
+      // Send OTP by SMS (non bloquant)
+      utility2.sendOptCode(otpCode, employe.phone_number).catch((err) => console.error('[verify_imma_send_otp] Erreur envoi SMS OTP:', err.message));
       if (employe.email) {
-        await utility2.sendOptByMail(otpCode, employe.email);
+        utility2.sendOptByMail(otpCode, employe.email).catch((err) => console.error('[verify_imma_send_otp] Erreur envoi email OTP:', err.message));
       }
     }
 
