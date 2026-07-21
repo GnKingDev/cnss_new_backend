@@ -46,7 +46,7 @@ const AffiliationVolontaire = sequelize.define('affiliation_volontaire', {
     allowNull: true
   },
   cni_file_path: {
-    type: DataTypes.STRING,
+    type: DataTypes.STRING, 
     allowNull: true
   },
   status: {

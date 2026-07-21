@@ -14,7 +14,6 @@ if (redisEnabled) {
       port: parseInt(process.env.redis_port || process.env.REDIS_PORT || '6379', 10)
     });
     client.on('error', (err) => console.error('Redis Error', err));
-    client.on('connect', () => console.log('✅ Redis connected (shared)'));
     isRedisConnectedFn = () => client.status === 'ready';
   } catch (err) {
     console.warn('Redis non disponible, utilisation du mode sans Redis:', err.message);

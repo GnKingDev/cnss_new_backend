@@ -282,7 +282,10 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Sync affiliation_volontaire — alter désactivé (table à 64 index max atteint)
+// Sync affiliation_volontaire — alter désactivé partout ici : sync({alter:true}) recrée un nouvel
+// index à chaque redémarrage au lieu de réutiliser l'existant (unique:true sur reference/uuid...),
+// ce qui a fait planter demande_acces_employe et accident_travail_demandes (limite MySQL 64 index/table).
+// Pour un vrai changement de schéma, utiliser un script scripts/*/migrate.js dédié, pas ce chargement au démarrage.
 // Sync séquentiel des tables AV (FK entre declaration → quittance → deadlock si parallèle)
 const AffiliationVolontaireModel = require('./db/affiliation-volontaire/model');
 const QuittanceAvModel = require('./db/quittance_affiliation_volontaire/model');
@@ -291,12 +294,11 @@ const DemandeAccesEmployeModel = require('./db/demande-acces-employe/model');
 const AccidentTravailModel = require('./db/accident_travail/model');
 
 AffiliationVolontaireModel.sync()
-  .then(() => { console.log('✅ affiliation_volontaire table synced'); return DeclarationAffiliationVolontaireModel.sync({ alter: true }); })
-  .then(() => { console.log('✅ declaration_affiliation_volontaire table synced'); return QuittanceAvModel.sync({ alter: true }); })
-  .then(() => { console.log('✅ quittance_affiliation_volontaire table synced'); return ReclamationDemandeModel.sync({ alter: true }); })
-  .then(() => { console.log('✅ reclamation_demandes table synced'); return DemandeAccesEmployeModel.sync({ alter: true }); })
-  .then(() => { console.log('✅ demande_acces_employe table synced'); return AccidentTravailModel.sync({ alter: true }); })
-  .then(() => console.log('✅ accident_travail_demandes table synced'))
+  .then(() => DeclarationAffiliationVolontaireModel.sync())
+  .then(() => QuittanceAvModel.sync())
+  .then(() => ReclamationDemandeModel.sync())
+  .then(() => DemandeAccesEmployeModel.sync())
+  .then(() => AccidentTravailModel.sync())
   .catch((err) => console.error('❌ AV sync error:', err.message));
 
 // Start server
@@ -332,15 +334,7 @@ function startPenalitesCron() {
     cycle += 1;
     const n = cycle;
     jobEnCours = true;
-    console.log(
-      `[penalites cron] ─── cycle #${n} ─── DÉBUT ${new Date().toISOString()} (intervalle ${intervalMs / 1000}s)`
-    );
-    runGeneratePenalites({ dryRun: false, enableLog: true })
-      .then((r) => {
-        console.log(
-          `[penalites cron] ─── cycle #${n} ─── TERMINÉ OK en ${r.durationMs ?? '?'}ms | scanned=${r.totalScanned} upsert=${r.upsertedOrUpdated} removed=${r.penalitesSupprimees}`
-        );
-      })
+    runGeneratePenalites({ dryRun: false, enableLog: false })
       .catch((err) => {
         console.error(
           `[penalites cron] ─── cycle #${n} ─── TERMINÉ EN ERREUR:`,
@@ -349,15 +343,11 @@ function startPenalitesCron() {
       })
       .finally(() => {
         jobEnCours = false;
-        console.log(`[penalites cron] ─── cycle #${n} — statut: fin d’exécution (prochain tick possible)`);
       });
   };
 
   setImmediate(run);
   setInterval(run, intervalMs);
-  console.log(
-    `[penalites cron] planificateur ACTIF — 1er run immédiat puis toutes les ${intervalMs / 1000}s (logs [penalites job] + [penalites cron])`
-  );
 }
 
 /** Au démarrage : génération automatique des déclarations pour tous les affiliés volontaires (cron au lancement). */
@@ -387,7 +377,6 @@ function runAvDeclarationsCron() {
     cycle += 1;
     const n = cycle;
     jobEnCours = true;
-    console.log(`[AV declarations cron] ─── cycle #${n} ─── DÉBUT ${new Date().toISOString()}`);
     runEnsureDeclarationsAv({ dryRun: false, enableLog: false })
       .then((r) => {
         if (r.totalCreated > 0 || r.errors?.length) {
@@ -400,7 +389,6 @@ function runAvDeclarationsCron() {
 
   setImmediate(run);
   setInterval(run, intervalMs);
-  console.log(`[AV declarations cron] ACTIF — 1er run immédiat puis toutes les ${intervalMs / 3600000}h`);
 }
 
 module.exports = app;
