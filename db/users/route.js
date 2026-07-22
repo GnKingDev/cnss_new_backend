@@ -146,7 +146,10 @@ router.post('/login', async (req, res) => {
 
       // Send OTP by email (non bloquant)
       if (user.email) {
-        utility2.sendOptByMail(otpCode, user.email).catch((err) => console.error('[login] Erreur envoi email OTP:', err.message));
+        console.log('[login] tentative envoi email OTP vers:', user.email);
+        utility2.sendOptByMail(otpCode, user.email)
+          .then((ok) => console.log('[login] résultat envoi email OTP pour', user.email, '->', ok))
+          .catch((err) => console.error('[login] Erreur envoi email OTP:', err.message));
       }
 
       // Send OTP by SMS (non bloquant)

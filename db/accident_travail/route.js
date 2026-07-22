@@ -462,9 +462,12 @@ router.put('/bo/demandes/:id/statut', async (req, res) => {
 
     // "Demande reçue" : notifie l'employeur par email avec le lien de soumission des documents complémentaires
     if (statut === 'received' && d.employeur && d.employeur.email) {
-      sendMailAccidentTravailReceived(d.employeur.email, d.employeur, d).catch((err) => {
-        console.error('[ACCIDENT_TRAVAIL_STATUT] Erreur envoi email:', err.message);
-      });
+      console.log('[ACCIDENT_TRAVAIL_STATUT] tentative envoi email vers:', d.employeur.email);
+      sendMailAccidentTravailReceived(d.employeur.email, d.employeur, d)
+        .then((ok) => console.log('[ACCIDENT_TRAVAIL_STATUT] résultat envoi email pour', d.employeur.email, '->', ok))
+        .catch((err) => console.error('[ACCIDENT_TRAVAIL_STATUT] Erreur envoi email:', err.message));
+    } else if (statut === 'received') {
+      console.warn('[ACCIDENT_TRAVAIL_STATUT] pas d\'email employeur — notification non envoyée. employeur:', d.employeur?.id, '| email:', d.employeur?.email);
     }
 
     return res.status(200).json({ success: true, data: d });

@@ -316,7 +316,14 @@ async function sendMailAfflitionVolonValidation(to, affiliationVolontaire, passw
 
 /** Envoi email : demande d'accident de travail reçue par le BO — invite à soumettre les documents complémentaires (lien uuid). */
 async function sendMailAccidentTravailReceived(to, employeur, accidentTravail) {
-  if (!transporter || !to) return;
+  if (!transporter) {
+    console.warn('[utility2] sendMailAccidentTravailReceived: transporter non configuré (teste.mail.js manquant ou SMTP mal configuré)');
+    return false;
+  }
+  if (!to) {
+    console.warn('[utility2] sendMailAccidentTravailReceived: destinataire (to) manquant');
+    return false;
+  }
   const emp = employeur || {};
   const at = accidentTravail || {};
   const logoUrl = 'https://firebasestorage.googleapis.com/v0/b/guicart-1581b.appspot.com/o/restoImg%2FCNSS.jpg?alt=media&token=bc7160b0-c2aa-4e1c-afe5-4d1d590dd52f';
@@ -333,8 +340,10 @@ async function sendMailAccidentTravailReceived(to, employeur, accidentTravail) {
         <p><a href="${link}">Cliquez ici pour soumettre les documents</a></p>
         <p style="color:red">NB : ce lien est personnel, ne le partagez pas.</p>`
     });
+    return true;
   } catch (err) {
     console.error('[utility2] sendMailAccidentTravailReceived:', err.message);
+    return false;
   }
 }
 
