@@ -8,9 +8,10 @@ const Employe = require('../employe/model');
  * pending             : En cours de vérification (créée par l'employeur)
  * received            : Demande reçue (validée par le BO) — déclenche l'email avec le lien uuid
  * documents_submitted : Documents complémentaires soumis par l'employeur (via le lien)
- * rejected            : Rejetée
+ * approved            : Validée par le BO — déclenche un email de confirmation
+ * rejected            : Rejetée par le BO (avec motif) — déclenche un email avec le motif
  */
-const ACCIDENT_TRAVAIL_STATUSES = ['pending', 'received', 'documents_submitted', 'rejected'];
+const ACCIDENT_TRAVAIL_STATUSES = ['pending', 'received', 'documents_submitted', 'approved', 'rejected'];
 
 const AccidentTravail = sequelize.define('AccidentTravail', {
   id: {
@@ -65,6 +66,11 @@ const AccidentTravail = sequelize.define('AccidentTravail', {
     type: DataTypes.JSON,
     allowNull: true,
     comment: 'Documents complémentaires soumis via le lien email (max 4) : [{ path, name }]'
+  },
+  rejection_reason: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    comment: 'Motif de rejet saisi par le BO, visible par l\'employeur'
   }
 }, {
   tableName: 'accident_travail_demandes',

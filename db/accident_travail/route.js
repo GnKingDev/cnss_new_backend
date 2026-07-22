@@ -11,11 +11,16 @@ const Employe = require('../employe/model');
 const { EmployeurToken, generateUniqueCode } = require('../users/utility');
 const { generateAccidentTravailModel } = require('./pdf');
 
-let sendMailAccidentTravailReceived;
+let sendMailAccidentTravailReceived, sendMailAccidentTravailApproved, sendMailAccidentTravailRejected;
 try {
-  sendMailAccidentTravailReceived = require('../../utility2').sendMailAccidentTravailReceived;
+  const u2 = require('../../utility2');
+  sendMailAccidentTravailReceived = u2.sendMailAccidentTravailReceived;
+  sendMailAccidentTravailApproved = u2.sendMailAccidentTravailApproved;
+  sendMailAccidentTravailRejected = u2.sendMailAccidentTravailRejected;
 } catch {
   sendMailAccidentTravailReceived = async () => {};
+  sendMailAccidentTravailApproved = async () => {};
+  sendMailAccidentTravailRejected = async () => {};
 }
 
 const STATUSES = AccidentTravail.ACCIDENT_TRAVAIL_STATUSES;
@@ -58,6 +63,7 @@ function formatItem(d) {
   const employe = dJson.employe || null;
   return {
     id: String(dJson.id),
+    uuid: dJson.uuid,
     reference: dJson.reference || '',
     employe_id: dJson.employe_id,
     employe: employe ? {
@@ -70,7 +76,8 @@ function formatItem(d) {
     date_sent: dJson.createdAt ? (typeof dJson.createdAt === 'string' ? dJson.createdAt : dJson.createdAt.toISOString()).slice(0, 10) : null,
     date_response: dJson.date_response ? (typeof dJson.date_response === 'string' ? dJson.date_response : dJson.date_response.toISOString()).slice(0, 10) : null,
     modele_url: dJson.modele_path ? `/api/v1/accident_travail/demandes/${dJson.id}/modele` : null,
-    document_url: dJson.document_path ? `/api/v1/accident_travail/demandes/${dJson.id}/document` : null
+    document_url: dJson.document_path ? `/api/v1/accident_travail/demandes/${dJson.id}/document` : null,
+    rejection_reason: dJson.rejection_reason || null
   };
 }
 
@@ -78,14 +85,15 @@ function formatItem(d) {
 router.get('/stats', EmployeurToken, async (req, res) => {
   try {
     const employeurId = req.user.user_id;
-    const [total, pending, received, documentsSubmitted, rejected] = await Promise.all([
+    const [total, pending, received, documentsSubmitted, approved, rejected] = await Promise.all([
       AccidentTravail.count({ where: { employeur_id: employeurId } }),
       AccidentTravail.count({ where: { employeur_id: employeurId, status: 'pending' } }),
       AccidentTravail.count({ where: { employeur_id: employeurId, status: 'received' } }),
       AccidentTravail.count({ where: { employeur_id: employeurId, status: 'documents_submitted' } }),
+      AccidentTravail.count({ where: { employeur_id: employeurId, status: 'approved' } }),
       AccidentTravail.count({ where: { employeur_id: employeurId, status: 'rejected' } })
     ]);
-    res.json({ total, pending, received, documents_submitted: documentsSubmitted, rejected });
+    res.json({ total, pending, received, documents_submitted: documentsSubmitted, approved, rejected });
   } catch (err) {
     res.status(500).json({ message: err.message || 'Erreur serveur' });
   }
@@ -367,21 +375,23 @@ function formatBoItem(d) {
           name: doc.name,
           url: `/uploads/accident_travail/${path.basename(doc.path)}`
         }))
-      : []
+      : [],
+    rejection_reason: dJson.rejection_reason || null
   };
 }
 
 // GET /bo/stats
 router.get('/bo/stats', async (req, res) => {
   try {
-    const [total, pending, received, documentsSubmitted, rejected] = await Promise.all([
+    const [total, pending, received, documentsSubmitted, approved, rejected] = await Promise.all([
       AccidentTravail.count(),
       AccidentTravail.count({ where: { status: 'pending' } }),
       AccidentTravail.count({ where: { status: 'received' } }),
       AccidentTravail.count({ where: { status: 'documents_submitted' } }),
+      AccidentTravail.count({ where: { status: 'approved' } }),
       AccidentTravail.count({ where: { status: 'rejected' } })
     ]);
-    return res.status(200).json({ success: true, data: { total, pending, received, documents_submitted: documentsSubmitted, rejected } });
+    return res.status(200).json({ success: true, data: { total, pending, received, documents_submitted: documentsSubmitted, approved, rejected } });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
@@ -450,27 +460,41 @@ router.put('/bo/demandes/:id/statut', async (req, res) => {
     });
     if (!d) return res.status(404).json({ success: false, message: 'Déclaration introuvable' });
 
-    const { statut } = req.body;
+    const { statut, motif } = req.body;
     if (!statut || !STATUSES.includes(statut)) {
       return res.status(400).json({ success: false, message: 'Statut invalide' });
+    }
+    if (statut === 'rejected' && (!motif || !motif.trim())) {
+      return res.status(400).json({ success: false, message: 'Le motif de rejet est requis' });
     }
 
     await d.update({
       status: statut,
-      date_response: statut === 'rejected' ? new Date() : d.date_response
+      date_response: (statut === 'rejected' || statut === 'approved') ? new Date() : d.date_response,
+      rejection_reason: statut === 'rejected' ? motif.trim() : d.rejection_reason
     });
 
-    // "Demande reçue" : notifie l'employeur par email avec le lien de soumission des documents complémentaires
-    if (statut === 'received' && d.employeur && d.employeur.email) {
-      console.log('[ACCIDENT_TRAVAIL_STATUT] tentative envoi email vers:', d.employeur.email);
-      sendMailAccidentTravailReceived(d.employeur.email, d.employeur, d)
-        .then((ok) => console.log('[ACCIDENT_TRAVAIL_STATUT] résultat envoi email pour', d.employeur.email, '->', ok))
-        .catch((err) => console.error('[ACCIDENT_TRAVAIL_STATUT] Erreur envoi email:', err.message));
+    const employeurEmail = d.employeur && d.employeur.email;
+    if (!employeurEmail) {
+      console.warn('[ACCIDENT_TRAVAIL_STATUT] pas d\'email employeur — notification non envoyée. employeur:', d.employeur?.id);
     } else if (statut === 'received') {
-      console.warn('[ACCIDENT_TRAVAIL_STATUT] pas d\'email employeur — notification non envoyée. employeur:', d.employeur?.id, '| email:', d.employeur?.email);
+      console.log('[ACCIDENT_TRAVAIL_STATUT] tentative envoi email (reçue) vers:', employeurEmail);
+      sendMailAccidentTravailReceived(employeurEmail, d.employeur, d)
+        .then((ok) => console.log('[ACCIDENT_TRAVAIL_STATUT] résultat envoi email pour', employeurEmail, '->', ok))
+        .catch((err) => console.error('[ACCIDENT_TRAVAIL_STATUT] Erreur envoi email:', err.message));
+    } else if (statut === 'approved') {
+      console.log('[ACCIDENT_TRAVAIL_STATUT] tentative envoi email (validée) vers:', employeurEmail);
+      sendMailAccidentTravailApproved(employeurEmail, d.employeur, d)
+        .then((ok) => console.log('[ACCIDENT_TRAVAIL_STATUT] résultat envoi email pour', employeurEmail, '->', ok))
+        .catch((err) => console.error('[ACCIDENT_TRAVAIL_STATUT] Erreur envoi email:', err.message));
+    } else if (statut === 'rejected') {
+      console.log('[ACCIDENT_TRAVAIL_STATUT] tentative envoi email (rejetée) vers:', employeurEmail);
+      sendMailAccidentTravailRejected(employeurEmail, d.employeur, d, motif.trim())
+        .then((ok) => console.log('[ACCIDENT_TRAVAIL_STATUT] résultat envoi email pour', employeurEmail, '->', ok))
+        .catch((err) => console.error('[ACCIDENT_TRAVAIL_STATUT] Erreur envoi email:', err.message));
     }
 
-    return res.status(200).json({ success: true, data: d });
+    return res.status(200).json({ success: true, data: formatBoItem(d) });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }

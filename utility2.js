@@ -348,6 +348,67 @@ async function sendMailAccidentTravailReceived(to, employeur, accidentTravail) {
   }
 }
 
+/** Envoi email : réclamation accident de travail validée par le BO. */
+async function sendMailAccidentTravailApproved(to, employeur, accidentTravail) {
+  if (!transporter) {
+    console.warn('[utility2] sendMailAccidentTravailApproved: transporter non configuré');
+    return false;
+  }
+  if (!to) {
+    console.warn('[utility2] sendMailAccidentTravailApproved: destinataire (to) manquant');
+    return false;
+  }
+  const emp = employeur || {};
+  const at = accidentTravail || {};
+  const logoUrl = 'https://firebasestorage.googleapis.com/v0/b/guicart-1581b.appspot.com/o/restoImg%2FCNSS.jpg?alt=media&token=bc7160b0-c2aa-4e1c-afe5-4d1d590dd52f';
+  try {
+    await transporter.sendMail({
+      from: `"Notification CNSS" <${user_email_name}>`,
+      to,
+      subject: `Réclamation Accident de Travail ${at.reference ?? ''} — Validée`,
+      html: `<img src="${logoUrl}" width="500" height="200" alt="CNSS" />
+        <p>Bonjour,</p>
+        <p>Votre déclaration d'accident de travail <strong>${at.reference ?? ''}</strong> pour l'entreprise <strong>${emp.raison_sociale ?? ''}</strong> a été <strong style="color:#1a7a2e">validée</strong> par nos services.</p>
+        <p>Votre dossier a été pris en charge. Vous serez contacté(e) pour la suite du traitement si nécessaire.</p>`
+    });
+    return true;
+  } catch (err) {
+    console.error('[utility2] sendMailAccidentTravailApproved:', err.message);
+    return false;
+  }
+}
+
+/** Envoi email : réclamation accident de travail rejetée par le BO, avec motif. */
+async function sendMailAccidentTravailRejected(to, employeur, accidentTravail, motif) {
+  if (!transporter) {
+    console.warn('[utility2] sendMailAccidentTravailRejected: transporter non configuré');
+    return false;
+  }
+  if (!to) {
+    console.warn('[utility2] sendMailAccidentTravailRejected: destinataire (to) manquant');
+    return false;
+  }
+  const emp = employeur || {};
+  const at = accidentTravail || {};
+  const logoUrl = 'https://firebasestorage.googleapis.com/v0/b/guicart-1581b.appspot.com/o/restoImg%2FCNSS.jpg?alt=media&token=bc7160b0-c2aa-4e1c-afe5-4d1d590dd52f';
+  try {
+    await transporter.sendMail({
+      from: `"Notification CNSS" <${user_email_name}>`,
+      to,
+      subject: `Réclamation Accident de Travail ${at.reference ?? ''} — Rejetée`,
+      html: `<img src="${logoUrl}" width="500" height="200" alt="CNSS" />
+        <p>Bonjour,</p>
+        <p>Votre déclaration d'accident de travail <strong>${at.reference ?? ''}</strong> pour l'entreprise <strong>${emp.raison_sociale ?? ''}</strong> a été <strong style="color:#c0392b">rejetée</strong> par nos services.</p>
+        ${motif ? `<p><strong>Motif :</strong> ${motif}</p>` : ''}
+        <p>Pour toute question, veuillez contacter la CNSS.</p>`
+    });
+    return true;
+  } catch (err) {
+    console.error('[utility2] sendMailAccidentTravailRejected:', err.message);
+    return false;
+  }
+}
+
 /** Envoi de la carte d'assuré (PDF) par email. */
 async function sendMailCarteAssure(toEmail, employeName, pdfBuffer) {
   if (!transporter || !toEmail) {
@@ -630,6 +691,8 @@ module.exports = {
   sendMailEmployeurValidation,
   sendMailAfflitionVolonValidation,
   sendMailAccidentTravailReceived,
+  sendMailAccidentTravailApproved,
+  sendMailAccidentTravailRejected,
   sendMailAppelCotisationAv,
   sendMailCarteAssure,
   getQuittusFile,
