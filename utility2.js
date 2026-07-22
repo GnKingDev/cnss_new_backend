@@ -327,7 +327,8 @@ async function sendMailAccidentTravailReceived(to, employeur, accidentTravail) {
   const emp = employeur || {};
   const at = accidentTravail || {};
   const logoUrl = 'https://firebasestorage.googleapis.com/v0/b/guicart-1581b.appspot.com/o/restoImg%2FCNSS.jpg?alt=media&token=bc7160b0-c2aa-4e1c-afe5-4d1d590dd52f';
-  const link = `https://compte.cnss.gov.gn/eadt/documents/${at.uuid}`;
+  const eadtHost = process.env.hosteADT || 'compte.cnss.gov.gn';
+  const link = `https://${eadtHost}/eadt/documents/${at.uuid}`;
   try {
     await transporter.sendMail({
       from: `"Notification CNSS" <${user_email_name}>`,
