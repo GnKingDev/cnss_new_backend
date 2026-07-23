@@ -275,7 +275,7 @@ router.get('/demandes/:id/modele', EmployeurToken, async (req, res) => {
 
 const uploadComplementaires = multer({
   storage,
-  limits: { fileSize: 15 * 1024 * 1024, files: 4 }
+  limits: { fileSize: 15 * 1024 * 1024, files: 20 }
 });
 
 function formatUuidItem(d) {
@@ -309,8 +309,8 @@ router.get('/documents/:uuid', EmployeurToken, async (req, res) => {
   }
 });
 
-// POST /api/v1/accident_travail/documents/:uuid — soumission des documents complémentaires (max 4 fichiers)
-router.post('/documents/:uuid', EmployeurToken, uploadComplementaires.array('documents', 4), async (req, res) => {
+// POST /api/v1/accident_travail/documents/:uuid — soumission des documents complémentaires
+router.post('/documents/:uuid', EmployeurToken, uploadComplementaires.array('documents', 20), async (req, res) => {
   try {
     const employeurId = req.user.user_id;
     const d = await AccidentTravail.findOne({ where: { uuid: req.params.uuid, employeur_id: employeurId } });
@@ -319,11 +319,17 @@ router.post('/documents/:uuid', EmployeurToken, uploadComplementaires.array('doc
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ message: 'Veuillez joindre au moins un document' });
     }
-    if (req.files.length > 4) {
-      return res.status(400).json({ message: '4 documents maximum' });
+
+    let labels = [];
+    if (typeof req.body.labels === 'string') {
+      try { labels = JSON.parse(req.body.labels); } catch (_) { labels = []; }
     }
 
-    const documents = req.files.map((f) => ({ path: f.filename, name: f.originalname || f.filename }));
+    const documents = req.files.map((f, i) => ({
+      path: f.filename,
+      name: f.originalname || f.filename,
+      label: Array.isArray(labels) ? (labels[i] || null) : null
+    }));
 
     await d.update({
       documents_complementaires: documents,
@@ -373,6 +379,7 @@ function formatBoItem(d) {
     documents_complementaires: Array.isArray(dJson.documents_complementaires)
       ? dJson.documents_complementaires.map((doc) => ({
           name: doc.name,
+          label: doc.label || null,
           url: `/uploads/accident_travail/${path.basename(doc.path)}`
         }))
       : [],
